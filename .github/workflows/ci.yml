@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: Offline test suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Compile check
+        run: python -m compileall -q engine data ai output web tests main.py config.py
+
+      - name: Run tests
+        run: python -m pytest tests/ -q
+
+      - name: Smoke test (offline engine on sample data)
+        run: python -c "
+          import pandas as pd
+          from engine.signal_engine import analyze_frame
+          df = pd.read_csv('data_samples/btcusdt_15m_sample.csv')
+          out = analyze_frame(df, symbol='BTCUSDT', timeframe='15m')
+          assert out.best_signal['asset'] == 'BTCUSDT'
+          print('smoke OK:', out.best_signal['action'], out.best_signal['confidence'])
+          "

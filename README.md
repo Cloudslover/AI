@@ -34,6 +34,9 @@ with connectors for your **private CryptoDada website** and **Discord group**.
 | **News** | RSS headlines with naive sentiment tally (CoinTelegraph, CoinDesk, Decrypt) |
 | **LLM narrative** | Optional AI Brain briefing (OpenAI-compatible / Gemini) that turns the numbers into plain English; rule-based fallback when no key is configured |
 | **Notifiers** | Telegram + Discord webhook push of signals |
+| **Backtester** | Walk-forward grading of every plan at +1h/+4h/+24h → win-rate, avg R, expectancy by plan type / confidence / action |
+| **Signal database** | SQLite learning store — every scan + every graded outcome, queried via `python main.py stats` |
+| **CI** | GitHub Actions runs the offline test suite on every push |
 | **Web dashboard** | Single-file Flask dashboard with live scan, plans, feature snapshot, score breakdown |
 
 ---
@@ -95,7 +98,13 @@ python main.py watch --symbol BTCUSDT --interval 120 --notify
 # 5. web dashboard
 python main.py web          # http://localhost:8050
 
-# 6. run tests
+# 6. backtest: grade every plan at +1h/+4h/+24h and store the outcomes
+python main.py backtest --symbol BTCUSDT --tf 15m --bars 300 --horizons 1,4,24 --save
+
+# 7. what the engine has learned (scans + backtest win-rates)
+python main.py stats
+
+# 8. run tests
 python -m pytest tests/ -q
 ```
 
@@ -223,12 +232,68 @@ the output is never empty.
 ## 🧪 Tests
 
 ```bash
-python -m pytest tests/ -q      # 23 tests, fully offline (synthetic data)
+python -m pytest tests/ -q      # 33 tests, fully offline (synthetic data)
 ```
 
 Covers: indicator math & no-look-ahead, structure detection (BOS/CHOCH, FVG,
 sweeps), score bounds, plan generation (SL below entry for BUY etc.), full
-pipeline, and JSON schema validation.
+pipeline, JSON schema validation, the backtester grader, and the database.
+
+On every push, GitHub Actions runs this suite automatically
+(`.github/workflows/ci.yml`) plus an offline smoke test on the sample data.
+
+---
+
+## 📊 Backtester — the learning loop
+
+`python main.py backtest --symbol BTCUSDT --tf 15m --bars 300 --horizons 1,4,24 --save`
+
+Walks the engine forward bar-by-bar (data up to each bar only — no look-ahead),
+then grades every plan it produced at each horizon:
+
+* **WIN / PARTIAL_WIN / FULL_WIN** — TP1 (and TP2) hit before SL
+* **LOSS** — SL hit before TP1
+* **OPEN** — neither level touched within the horizon
+* **NOT_TRIGGERED** — the conditional plan's entry level was never reached
+
+Output aggregates **win-rate, average R and expectancy** by plan type, by
+confidence bucket and by action. Example (real BTCUSDT 15m, 300 bars):
+
+```
+by plan type:
+  Buy Pullback        exec 137  win 73.0%  avgR +1.50
+  FVG Retest Buy      exec  80  win 60.0%  avgR +1.19
+  Breakout Buy        exec 271  win  8.5%  avgR -0.70
+```
+
+This is how the engine discovers *its own* edge map — which setups to trust
+and which to filter out. `--save` stores every graded outcome in the signal
+database.
+
+---
+
+## 🗄 Signal database — the memory
+
+Every `scan` and `watch` tick is saved by default to `data/cryptobrain.db`
+(SQLite, no extra deps) — signal, plans, feature snapshot, market context.
+Backtest outcomes land in the same store.
+
+```bash
+python main.py stats    # scans + plan distribution + backtest win-rates
+```
+
+Tables: `scans`, `plans`, `backtest_results`. Use `--no-save` to skip DB
+writes. This store is the foundation for future confidence calibration
+(e.g. dampen a plan type the engine has measured as negative-expectancy).
+
+---
+
+## 🔄 CI
+
+`.github/workflows/ci.yml` runs on every push / PR to `main`:
+Python 3.12 → install deps → `compileall` → `pytest` → offline smoke test on
+`data_samples/btcusdt_15m_sample.csv`. All tests are network-free, so CI is
+fast and deterministic.
 
 ---
 
@@ -236,7 +301,7 @@ pipeline, and JSON schema validation.
 
 ```
 crypto-brain/
-├── main.py                  # CLI: scan / watch / sources / web
+├── main.py                  # CLI: scan / watch / sources / backtest / stats / web
 ├── config.py                # env-driven configuration
 ├── engine/
 │   ├── indicators.py        # RSI MACD EMA VWAP ADX BB Supertrend WaveTrend …
@@ -247,6 +312,8 @@ crypto-brain/
 │   └── signal_engine.py     # orchestrator → final JSON
 ├── data/
 │   ├── binance_client.py    # geo-aware Binance market data
+│   ├── database.py          # SQLite learning store (scans/plans/backtests)
+│   ├── backtester.py        # walk-forward plan grader (+1h/+4h/+24h)
 │   └── sources/
 │       ├── cryptodada_website.py  # private-site connector (api/browser)
 │       ├── discord_reader.py      # Discord reader + webhook push
@@ -256,7 +323,8 @@ crypto-brain/
 │   ├── signal_schema.py     # JSON validation
 │   └── notifiers.py         # Telegram + Discord push
 ├── web/app.py               # Flask dashboard
-├── tests/                   # offline test-suite
+├── tests/                   # offline test-suite (33 tests)
+├── .github/workflows/ci.yml # auto test-runner on push
 ├── examples/example_signal.json
 └── data_samples/btcusdt_15m_sample.csv
 ```

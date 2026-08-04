@@ -53,3 +53,11 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 # ── Web dashboard ────────────────────────────────────────────────────────
 DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "0.0.0.0")
 DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "8050"))
+
+# ── Signal database (learning store) ─────────────────────────────────────
+DB_PATH = os.getenv("DB_PATH", str(ROOT / "data" / "cryptobrain.db"))
+
+# ── Backtester ───────────────────────────────────────────────────────────
+BACKTEST_HORIZONS = [float(h) for h in os.getenv("BACKTEST_HORIZONS", "1,4,24").split(",")]
+BACKTEST_MIN_BARS = int(os.getenv("BACKTEST_MIN_BARS", "120"))
+BACKTEST_STEP = int(os.getenv("BACKTEST_STEP", "1"))

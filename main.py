@@ -33,7 +33,7 @@ def _client() -> BinanceClient:
 
 
 def run_scan(symbol: str, timeframe: str, bars: int, with_context: bool = True,
-             with_llm: bool = False) -> dict:
+             with_llm: bool = False, save_db: bool = True) -> dict:
     client = _client()
     df = client.klines(symbol, timeframe, bars)
     out = analyze_frame(df, symbol=symbol, timeframe=timeframe,
@@ -49,6 +49,11 @@ def run_scan(symbol: str, timeframe: str, bars: int, with_context: bool = True,
         payload["llm"] = LLMBrain().generate(payload)
 
     payload["validation"] = validate_output(payload)
+
+    if save_db:
+        from data.database import SignalDB
+        with SignalDB() as db:
+            db.save_scan(payload)
     return payload
 
 
@@ -57,7 +62,8 @@ def cmd_scan(args) -> int:
     all_payloads = []
     for sym in symbols:
         try:
-            payload = run_scan(sym, args.tf, args.bars, with_llm=args.llm)
+            payload = run_scan(sym, args.tf, args.bars, with_llm=args.llm,
+                               save_db=not args.no_save)
             all_payloads.append(payload)
             if not args.json:
                 _print_human(payload)
@@ -100,7 +106,8 @@ def cmd_watch(args) -> int:
     last_sig = None
     while True:
         try:
-            payload = run_scan(args.symbol, args.tf, args.bars)
+            payload = run_scan(args.symbol, args.tf, args.bars,
+                               save_db=not args.no_save)
             sig = payload["signal"]
             if sig["action"] != "NO TRADE" and sig.get("signal_id") != last_sig:
                 last_sig = sig.get("signal_id")
@@ -134,6 +141,79 @@ def cmd_sources(args) -> int:
     return 0
 
 
+def cmd_backtest(args) -> int:
+    from data.backtester import run_backtest, save_report, print_report
+    from data.database import SignalDB
+
+    client = _client()
+    df = client.klines(args.symbol, args.tf, args.bars)
+    horizons = [float(h) for h in args.horizons.split(",") if h.strip()]
+    result = run_backtest(df, symbol=args.symbol, timeframe=args.tf,
+                          horizons=horizons, min_confidence=args.min_conf)
+    report = result["report"]
+    save_report(report)
+    print_report(report)
+
+    if args.save:
+        run_id = time.strftime("%Y%m%d_%H%M%S")
+        rows = []
+        for g in result["graded"]:
+            r = g.as_row()
+            r.update({"run_id": run_id, "symbol": args.symbol,
+                      "timeframe": args.tf})
+            rows.append(r)
+        with SignalDB() as db:
+            n = db.save_backtest_rows(rows, run_id)
+        print(f"\nSaved {n} graded plans to the signal database (run {run_id}).")
+        print("Run `python main.py stats` to see what the engine has learned.")
+    return 0
+
+
+def cmd_stats(args) -> int:
+    from data.database import SignalDB
+
+    with SignalDB() as db:
+        scans = db.latest_scans(args.symbol or None, limit=15)
+        plan_stats = db.plan_stats()
+        bt = db.backtest_stats()
+
+    print("=" * 66)
+    print("SIGNAL DATABASE — learning store")
+    if not scans:
+        print("No scans recorded yet. Run `python main.py scan` (saves by default).")
+        return 0
+    print(f"latest {len(scans)} scans:")
+    for s in scans:
+        print(f"  {s['symbol']:<10} {s['timeframe']:<4} {s['action']:<8} "
+              f"conf={s['confidence_label']:<7} entry={s['entry']}  {s['created_at']}")
+    print("-" * 66)
+    print("plan-type distribution (live scans):")
+    for p in plan_stats:
+        print(f"  {p['type']:<24} n={p['n']:>4} avgConf={p['avg_conf']}  avgRR={p['avg_rr']}")
+
+    overall = bt["overall"]
+    print("-" * 66)
+    print("BACKTEST learning:")
+    if overall["n"]:
+        wr = overall["win_rate"]
+        print(f"  overall: {overall['n']} graded | win-rate "
+              f"{f'{wr*100:.1f}%' if wr is not None else 'n/a'} | "
+              f"avgR {overall['avg_rr']} | wins {overall['wins']} losses {overall['losses']}")
+        print("  by plan type:")
+        for r in bt["by_type"]:
+            wr = r["win_rate"]
+            print(f"    {r['plan_type']:<24} n={r['n']:>4} win "
+                  f"{f'{wr*100:.1f}%' if wr is not None else 'n/a'}  avgR {r['avg_rr']}")
+        print("  by confidence bucket:")
+        for r in bt["by_confidence"]:
+            wr = r["win_rate"]
+            print(f"    {r['bucket']:<8} n={r['n']:>4} win "
+                  f"{f'{wr*100:.1f}%' if wr is not None else 'n/a'}  avgR {r['avg_rr']}")
+    else:
+        print("  none yet — run `python main.py backtest --save` to start learning.")
+    return 0
+
+
 def cmd_web(args) -> int:
     from web.app import make_app, serve
     host = args.host or DASHBOARD_HOST
@@ -153,6 +233,7 @@ def main() -> int:
     p_scan.add_argument("--bars", type=int, default=BARS)
     p_scan.add_argument("--json", action="store_true", help="raw JSON output")
     p_scan.add_argument("--llm", action="store_true", help="attach LLM narrative if configured")
+    p_scan.add_argument("--no-save", action="store_true", help="do not write the scan to the signal database")
     p_scan.set_defaults(func=cmd_scan)
 
     p_watch = sub.add_parser("watch", help="continuous monitor loop")
@@ -161,10 +242,24 @@ def main() -> int:
     p_watch.add_argument("--bars", type=int, default=BARS)
     p_watch.add_argument("--interval", type=int, default=120)
     p_watch.add_argument("--notify", action="store_true", help="push signals to Telegram/Discord")
+    p_watch.add_argument("--no-save", action="store_true", help="do not write scans to the signal database")
     p_watch.set_defaults(func=cmd_watch)
 
     p_src = sub.add_parser("sources", help="pull CryptoDada + Discord + news")
     p_src.set_defaults(func=cmd_sources)
+
+    p_bt = sub.add_parser("backtest", help="walk-forward grade of engine plans")
+    p_bt.add_argument("--symbol", default=SYMBOL)
+    p_bt.add_argument("--tf", default=TIMEFRAME)
+    p_bt.add_argument("--bars", type=int, default=BARS)
+    p_bt.add_argument("--horizons", default="1,4,24", help="comma-separated hours, e.g. 1,4,24")
+    p_bt.add_argument("--min-conf", type=int, default=MIN_CONFIDENCE)
+    p_bt.add_argument("--save", action="store_true", help="store graded outcomes in the signal database")
+    p_bt.set_defaults(func=cmd_backtest)
+
+    p_stats = sub.add_parser("stats", help="what the engine has learned (DB + backtests)")
+    p_stats.add_argument("--symbol", default=None)
+    p_stats.set_defaults(func=cmd_stats)
 
     p_web = sub.add_parser("web", help="run the web dashboard")
     p_web.add_argument("--host", default=None)

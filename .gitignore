@@ -10,6 +10,13 @@ venv/
 # data caches (keep the committed sample)
 data_samples/*.csv
 !data_samples/btcusdt_15m_sample.csv
+data_samples/backtest_report.json
+
+# sqlite learning store
+*.db
+
+# local session-continuation notes (never pushed)
+SESSION.md
 
 # tooling
 .pytest_cache/
