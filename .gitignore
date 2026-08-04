@@ -27,3 +27,8 @@ htmlcov/
 
 # os
 .DS_Store
+
+# sqlite learning store + WAL sidecars
+*.db
+*.db-shm
+*.db-wal
