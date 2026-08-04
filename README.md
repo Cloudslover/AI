@@ -40,7 +40,7 @@ with connectors for your **private CryptoDada website** and **Discord group**.
 | **Self-improvement** | `python main.py learn` recomputes a per-setup calibration profile from backtest outcomes — boosts positive-expectancy plans, dampens (or filters) negative ones. The engine literally gets better with every backtest. |
 | **Coach (teaching)** | `python main.py coach` explains *why* the engine said what it said, mentors you through the top setup step-by-step, gives personal feedback on your own approvals/rejections, and ships a full trading glossary. |
 | **CI** | GitHub Actions runs the offline test suite on every push |
-| **Web dashboard** | Single-file Flask dashboard with live scan, plans, feature snapshot, score breakdown, human-approval queue, and coach panel |
+| **Web dashboard** | **`python main.py`** opens the all-in-one dashboard: live signal + lifecycle badge, plans, feature snapshot, score breakdown, market context, **human approval queue with Approve/Reject buttons**, recent signals (click a row for detail + decide), **learning dashboard** (backtest win-rates + calibration), coach panel, and LLM narrative — auto-refreshing. |
 
 ---
 
@@ -89,17 +89,17 @@ Binance klines → add_all_indicators() → analyze_structure()
 # 1. install
 pip install -r requirements.txt
 
-# 2. one-shot scan (live Binance data, no keys needed)
+# 2. ALL-IN-ONE DASHBOARD — watch everything + click to approve
+python main.py              # opens http://localhost:8050
+
+# 3. one-shot scan (live Binance data, no keys needed)
 python main.py scan --symbol BTCUSDT --tf 15m --json
 
-# 3. multi-symbol
+# 4. multi-symbol
 python main.py scan --symbols BTCUSDT,ETHUSDT,SOLUSDT --tf 1h
 
-# 4. continuous watch + notify (once you configure .env)
+# 5. continuous watch + notify (once you configure .env)
 python main.py watch --symbol BTCUSDT --interval 120 --notify
-
-# 5. web dashboard
-python main.py web          # http://localhost:8050
 
 # 6. backtest: grade every plan at +1h/+4h/+24h and store the outcomes
 python main.py backtest --symbol BTCUSDT --tf 15m --bars 300 --horizons 1,4,24 --save

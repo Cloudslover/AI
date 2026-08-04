@@ -29,11 +29,12 @@ from config import DB_PATH
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS scans(
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  ts INTEGER, symbol TEXT, timeframe TEXT, price REAL,
+  signal_id TEXT, ts INTEGER, symbol TEXT, timeframe TEXT, price REAL,
   action TEXT, entry REAL, stop_loss REAL, take_profit REAL,
   risk_reward REAL, confidence_label TEXT, confidence_pct INTEGER,
   reason TEXT, signal_type TEXT,
   features_json TEXT, plans_json TEXT, context_json TEXT,
+  status TEXT DEFAULT 'PENDING_REVIEW', lifecycle_ts INTEGER, approve_note TEXT,
   created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE TABLE IF NOT EXISTS plans(
@@ -91,6 +92,8 @@ class SignalDB:
     def _migrate(self) -> None:
         """Add lifecycle columns to pre-existing DBs (idempotent)."""
         cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(scans)")}
+        if "signal_id" not in cols:
+            self.conn.execute("ALTER TABLE scans ADD COLUMN signal_id TEXT")
         if "status" not in cols:
             self.conn.execute("ALTER TABLE scans ADD COLUMN status TEXT DEFAULT 'PENDING_REVIEW'")
         if "lifecycle_ts" not in cols:
@@ -173,11 +176,12 @@ class SignalDB:
         status = "PENDING_REVIEW" if reviewable(sig) else "CREATED"
         cur = self.conn.execute(
             """INSERT INTO scans
-               (ts, symbol, timeframe, price, action, entry, stop_loss, take_profit,
+               (signal_id, ts, symbol, timeframe, price, action, entry, stop_loss, take_profit,
                 risk_reward, confidence_label, confidence_pct, reason, signal_type,
                 features_json, plans_json, context_json, status, lifecycle_ts)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
+                sig.get("signal_id"),
                 sig.get("timestamp") or int(time.time() * 1000),
                 sig.get("asset", ""),
                 sig.get("timeframe", ""),

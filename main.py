@@ -391,7 +391,7 @@ def cmd_web(args) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="CryptoBrain — AI trading-brain signal engine")
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub = ap.add_subparsers(dest="cmd")
 
     p_scan = sub.add_parser("scan", help="one-shot signal scan")
     p_scan.add_argument("--symbol", default=SYMBOL)
@@ -483,6 +483,16 @@ def main() -> int:
     args = ap.parse_args()
     if args.cmd == "scan" and args.symbols is None:
         args.symbols = args.symbol
+    if args.cmd is None:
+        # Default: open the all-in-one dashboard (watch everything + click to approve)
+        from web.app import make_app, serve
+        print("=" * 62)
+        print("🧠 CryptoBrain — all-in-one dashboard")
+        print(f"   open  http://localhost:{DASHBOARD_PORT}   (watch + click approve/reject)")
+        print("   other commands: scan | watch | backtest | learn | stats | coach | review | sources")
+        print("=" * 62)
+        serve(make_app(), DASHBOARD_HOST, DASHBOARD_PORT)
+        return 0
     return args.func(args)
 
 
