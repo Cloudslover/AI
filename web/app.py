@@ -41,6 +41,7 @@ from engine.signal_engine import analyze_frame
 from output.signal_schema import validate_output
 
 _CACHE: dict = {"payload": None, "ts": 0, "ttl": 40}
+_LAST_GOOD: dict = {}   # last successfully-computed payload — served on transient failures
 
 
 def _persist(payload: dict) -> tuple[int, str]:
@@ -105,6 +106,7 @@ def _basic_scan(symbol: str, tf: str, save: bool) -> dict:
                 _persist(payload)
             except Exception:
                 pass
+        _LAST_GOOD.update(payload)
         return payload
     raise ConnectionError(result.get("error", "scan timed out"))
 
@@ -135,7 +137,15 @@ def compute_payload(symbol: str, tf: str, save: bool = True, use_cache: bool = T
     t.join(timeout=_SCAN_TIMEOUT)
 
     if "payload" not in result:
-        # Fallback: engine-only quick scan so the page never hangs or 500s.
+        # Fallback: if we have a last-good payload, serve it marked stale so the
+        # dashboard never blanks on a transient failure. Otherwise engine-only
+        # quick scan; if even that fails, an error-shaped payload (still 200).
+        if _LAST_GOOD:
+            stale = dict(_LAST_GOOD)
+            stale["stale"] = True
+            stale["stale_error"] = result.get("error", "scan timed out")
+            _CACHE.update(payload=stale, ts=time.time())
+            return stale
         try:
             payload = _basic_scan(symbol, tf, save=save)
         except Exception as exc:
@@ -158,6 +168,7 @@ def compute_payload(symbol: str, tf: str, save: bool = True, use_cache: bool = T
             _persist(payload)
         except Exception:
             pass
+    _LAST_GOOD.update(payload)
     _CACHE.update(payload=payload, ts=time.time())
     return payload
 
@@ -238,6 +249,14 @@ window.onerror = function(msg, src, line){
     document.body.appendChild(box);
   }catch(e){}
 };
+window.addEventListener('unhandledrejection', function(ev){
+  try{
+    var box=document.createElement('div');
+    box.style.cssText='position:fixed;bottom:0;left:0;right:0;background:#b45309;color:#fff;z-index:999;padding:8px;font:12px monospace;white-space:pre-wrap';
+    box.textContent='⚠️ Background update hiccup: '+(ev.reason&&ev.reason.message||ev.reason||'unknown')+' — the page keeps working.';
+    document.body.appendChild(box);
+  }catch(e){}
+});
 const fmt=(v,n=2)=> v==null?'—':Number(v).toLocaleString(undefined,{minimumFractionDigits:n,maximumFractionDigits:n});
 const cls=a=> a==='BUY'?'BUY':a==='SELL'?'SELL':'NOTRADE';
 const stCls=s=> s==='APPROVED'?'var(--green)':s==='REJECTED'?'var(--red)':s==='EXECUTED'?'var(--blue)':s==='CLOSED'?'var(--amber)':'var(--amber)';
@@ -451,12 +470,14 @@ function chartSVG(cs){
   return s;
 }
 
+let __lastGood = '';   // last successfully-rendered dashboard HTML
+let __lastGoodAt = null;
 async function load(force, quiet){
   const sym=document.getElementById('sym').value.trim().toUpperCase()||'BTCUSDT';
   const tf=document.getElementById('tf').value;
   let t0=Date.now();
   const app=document.getElementById('app');
-  if(!quiet){
+  if(!quiet && !__lastGood){
     app.innerHTML = `<div class="card" style="grid-column:1/-1"><h2>Scanning ${sym} ${tf}</h2>
       <div class="muted" id="scanstatus">fetching timeframes + news + macro + context…</div></div>`;
   }
@@ -471,10 +492,29 @@ async function load(force, quiet){
   try{
     const r=await fetch(`/api/scan?symbol=${sym}&tf=${tf}`+(force?'&force=1':''), {signal:ctrl.signal});
     const d=await r.json(); clearTimeout(to); clearInterval(tick);
-    if(d.error){ app.innerHTML=`<div class="card" style="grid-column:1/-1"><div class="err">${esc(d.error)}</div><button class="rowbtn" onclick="load(true)" style="margin-top:8px">Retry</button></div>`; return; }
-    render(d); document.getElementById('updated').textContent='updated '+new Date().toLocaleTimeString();
+    if(d.error || d.stale_error){
+      if(quiet && __lastGood){
+        // Background refresh failed — KEEP the last good dashboard, just note it.
+        const up=document.getElementById('updated');
+        if(up) up.textContent='⚠ refresh failed ('+new Date().toLocaleTimeString()+') — showing last data';
+        return;
+      }
+      app.innerHTML=`<div class="card" style="grid-column:1/-1"><div class="err">${esc(d.error||d.stale_error)}</div><button class="rowbtn" onclick="load(true)" style="margin-top:8px">Retry</button></div>`;
+      return;
+    }
+    render(d);
+    __lastGood = app.innerHTML;
+    __lastGoodAt = Date.now();
+    const up=document.getElementById('updated');
+    if(up) up.textContent='updated '+new Date().toLocaleTimeString();
   }catch(e){
     clearTimeout(to); clearInterval(tick);
+    if(quiet && __lastGood){
+      // never wipe a working dashboard on a transient background failure
+      const up=document.getElementById('updated');
+      if(up) up.textContent='⚠ refresh failed ('+new Date().toLocaleTimeString()+') — showing last data';
+      return;
+    }
     app.innerHTML=`<div class="card" style="grid-column:1/-1"><div class="err">Load failed: ${esc(e.name==='AbortError'?'timed out (90s)':e)}</div>
       <div class="note" style="margin-top:4px">Click <b>🔍 System check</b> (Connections card) to see which source is blocked, or retry.</div>
       <button class="rowbtn" onclick="load(true)" style="margin-top:8px">Retry</button></div>`;

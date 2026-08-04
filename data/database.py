@@ -79,8 +79,16 @@ class SignalDB:
     def __init__(self, path: str | Path | None = None):
         self.path = Path(path) if path else Path(DB_PATH)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(self.path))
+        # Thread-safe: the dashboard's watchdog thread, Flask request threads
+        # and auto-refresh all write to this DB concurrently. WAL mode +
+        # busy_timeout + check_same_thread=False prevent periodic
+        # "database is locked" crashes on busy machines.
+        self.conn = sqlite3.connect(str(self.path), timeout=15,
+                                    check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute("PRAGMA busy_timeout=15000")
+        self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.executescript(SCHEMA)
         self._migrate()
         self.conn.commit()

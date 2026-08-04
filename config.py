@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION = "1.7.2"
+VERSION = "1.7.3"
 
 ROOT = Path(__file__).parent
 

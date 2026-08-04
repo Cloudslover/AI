@@ -62,6 +62,39 @@ def test_plan_stats(tmp_path):
     db.close()
 
 
+def test_db_wal_and_busy_timeout_enabled(tmp_path):
+    """Concurrent dashboard threads write to the same DB; WAL + busy timeout
+    must be on so periodic 'database is locked' crashes never happen."""
+    db = SignalDB(tmp_path / "t.db")
+    mode = db.conn.execute("PRAGMA journal_mode").fetchone()[0]
+    assert mode.lower() == "wal"
+    busy = db.conn.execute("PRAGMA busy_timeout").fetchone()[0]
+    assert busy >= 15000
+    db.close()
+
+
+def test_db_can_be_written_from_multiple_threads(tmp_path):
+    """The dashboard's background threads each open their OWN SignalDB (like
+    the real code does). WAL + busy_timeout must make concurrent writes safe —
+    no 'database is locked' errors."""
+    import threading
+    errors = []
+
+    def worker():
+        try:
+            with SignalDB(tmp_path / "t.db") as db:
+                db.save_scan(_payload())
+        except Exception as exc:
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert errors == []
+
+
 def test_backtest_stats_empty_db_does_not_crash(tmp_path):
     """Regression: a fresh/empty DB used to crash backtest_stats with
     'None + None' (SUM returns NULL over an empty table)."""

@@ -107,7 +107,7 @@ def _run_harness(payload_json: str) -> None:
     function el(id){{ if(!elements[id]) elements[id]={{ innerHTML:'', value:'BTCUSDT',
       textContent:'', checked:true, disabled:false, style:{{}}, addEventListener:()=>{{}},
       querySelector:()=>null }}; return elements[id]; }}
-    global.window = {{}};
+    global.window = {{ addEventListener: ()=>{{}} }};
     global.document = {{ getElementById: el, addEventListener: ()=>{{}} }};
     global.fetch = async (url) => ({{ json: async () => {{
       if(String(url).includes('/api/candles')) return {{ candles: [] }};

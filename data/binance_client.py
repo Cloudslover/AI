@@ -183,7 +183,14 @@ class BinanceClient:
                 oi = ex.submit(self.open_interest, symbol)
                 ls = ex.submit(self.long_short_ratio, symbol)
                 liq = ex.submit(self.liquidations, symbol)
-                fr, oi, ls, liq = fr.result(), oi.result(), ls.result(), liq.result()
+                # .exception() instead of .result(): a failing future must never
+                # re-raise and kill the whole scan.
+                def _safe(fut):
+                    try:
+                        return fut.exception() or fut.result()
+                    except Exception:
+                        return None
+                fr, oi, ls, liq = (_safe(f) for f in (fr, oi, ls, liq))
             ctx = {
                 "futures": True,
                 "funding_rate_pct": fr["funding_rate_pct"] if fr else None,
