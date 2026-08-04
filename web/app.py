@@ -73,20 +73,10 @@ def compute_payload(symbol: str, tf: str, save: bool = True, use_cache: bool = T
     if use_cache and _CACHE["payload"] and _CACHE["payload"].get("signal", {}).get("asset") == symbol \
             and time.time() - _CACHE["ts"] < _CACHE["ttl"]:
         return _CACHE["payload"]
+    from brain.full_pipeline import analyze_full
     client = BinanceClient()
-    df = client.klines(symbol, tf, BARS)
-    calib = {}
-    try:
-        from data.database import SignalDB
-        with SignalDB() as db:
-            calib = db.load_calibration()
-    except Exception:
-        pass
-    out = analyze_frame(df, symbol=symbol, timeframe=tf,
-                        min_confidence=MIN_CONFIDENCE, default_rr=DEFAULT_RISK_REWARD,
-                        calibration=calib)
-    payload = out.as_json()
-    payload["market_context"] = client.market_context(symbol)
+    payload = analyze_full(symbol, tf, bars=BARS, client=client,
+                           with_context=True, with_memory=True)
     payload["validation"] = validate_output(payload)
     if save:
         _persist(payload)
@@ -195,6 +185,29 @@ function render(d){
       <b>Note</b><span>${esc(lc.note||'')}</span>
     </div>${decideBtns}`, true);
 
+  html += card(`CANDLESTICK — ${s.asset} ${s.timeframe}`,
+    `<div id="chart" style="width:100%;height:260px"></div>
+     <div class="note">last 90 candles · EMA 20/50 overlay · volume bars · HTF levels dotted</div>`, true);
+
+  const mtf=d.mtf||{}, views=mtf.views||{}, al=mtf.alignment||{};
+  html += card('MULTI-TIMEFRAME (HTF → LTF)', `
+    <table><tr><th>TF</th><th>Trend</th><th>RSI</th><th>ADX</th><th>Event</th><th>Zone</th></tr>
+    ${['1d','4h','1h','15m','5m'].map(tf=>{
+      const v=views[tf]||{};
+      if(!v.available) return `<tr><td>${tf}</td><td class="muted">—</td><td/><td/><td/><td/></tr>`;
+      return `<tr><td><b>${tf}</b></td>
+        <td style="color:${v.trend==='bull'?'var(--green)':v.trend==='bear'?'var(--red)':'var(--amber)'}">${v.trend}</td>
+        <td>${fmt(v.rsi,0)}</td><td>${fmt(v.adx,0)}</td>
+        <td>${v.event_kind||'—'}</td><td>${v.premium_discount||'—'}</td></tr>`;
+    }).join('')}
+    </table>
+    <div class="flex" style="margin-top:8px">
+      <span class="badge">HTF ${mtf.htf_bias}</span>
+      <span class="badge">LTF ${mtf.ltf_bias}</span>
+      <span class="badge" style="color:${al.score>=30?'var(--green)':al.score<=-30?'var(--red)':'var(--amber)'}">alignment ${al.score} (${al.label})</span>
+    </div>
+    <div class="note" style="margin-top:6px">support ${(mtf.key_levels?.support||[]).map(fmt).join(', ')} · resistance ${(mtf.key_levels?.resistance||[]).map(fmt).join(', ')}</div>`, true);
+
   html += card(`CONDITIONAL PLANS (${plans.length})`,
     plans.length ? plans.map(p=>`<div class="plan"><div class="h">
         <b class="${cls(p.action)}">${p.action} · ${p.type}</b>
@@ -203,6 +216,21 @@ function render(d){
         <div class="c">${esc(p.condition)}</div>
         <div class="c mono">entry ${fmt(p.entry)} · sl ${fmt(p.stop_loss)} · tp ${p.take_profits.map(fmt).join(', ')} · RR ${p.risk_reward}</div></div>`).join('')
       : '<div class="muted">No plans above threshold — best trade is no trade.</div>');
+
+  const styles=d.styles||{}, sall=styles.styles||{};
+  html += card('WHAT THE MARKET OFFERS (by trading style)', `
+    <table><tr><th>Style</th><th>Setup</th><th>Conf</th><th>Horizon</th></tr>
+    ${['Scalp','Day','Swing','Momentum','Position'].map(s=>{
+      const v=sall[s]||{};
+      if(!v.available) return `<tr><td>${s}</td><td class="muted">—</td><td/><td/></tr>`;
+      return `<tr><td><b>${s}</b></td>
+        <td><span class="${cls(v.direction)}">${v.direction}</span> <span class="note">${esc((v.reason||'').slice(0,55))}</span></td>
+        <td>${v.confidence}%</td><td>${v.horizon}</td></tr>`;
+    }).join('')}
+    </table>
+    ${styles.market_offering && styles.market_offering.length
+      ? `<div class="note" style="margin-top:6px">offering: ${styles.market_offering.join(', ')}</div>`
+      : `<div class="muted" style="margin-top:6px">stand aside — ${esc((styles.stand_aside||[]).join('; '))}</div>`}`, true);
 
   const kvs=[
     ['Trend', f.trend, null], ['EMA stack', f.ema_alignment_bull?'Bull aligned':f.ema_alignment_bear?'Bear aligned':'mixed'],
@@ -232,6 +260,37 @@ function render(d){
     <b>Futures</b><span>${ctx.futures?'available':'geo-blocked from this network'}</span>
   </div>`);
 
+  const ctx=d.context||{};
+  const fng=ctx.fear_greed||{}, dom=ctx.dominance||{}, eq=ctx.equities||{},
+        macro=ctx.macro||{}, cyc=ctx.cycle||{}, geo=ctx.geopolitics||{},
+        soc=ctx.social||{}, reg=ctx.risk_regime||{};
+  const cp=eq.change_pct||{};
+  html += card('CONTEXT — WHAT AFFECTS PRICE', `
+    <div class="kv">
+      <b>Risk regime</b><span>${reg.regime||'n/a'} (${reg.score??''})</span>
+      <b>Fear & Greed</b><span>${fng.available?fng.value+' ('+fng.label+')':'n/a'}</span>
+      <b>BTC dominance</b><span>${dom.available?dom.btc_dominance+'% (ETH '+dom.eth_dominance+'%)':'n/a'}</span>
+      <b>Market cap</b><span>${dom.available?'$'+(dom.total_market_cap_usd/1e12).toFixed(2)+'T ('+dom.market_cap_change_24h_pct+'%)':'n/a'}</span>
+      <b>S&P500 / Nasdaq</b><span>${eq.available?cp['^spx']+'% / '+cp['^ndq']+'%':'n/a'}</span>
+      <b>Dollar (DXY)</b><span>${eq.available?cp['dx.f']+'%':'n/a'}</span>
+      <b>Cycle phase</b><span>${cyc.available?cyc.phase+' · '+cyc.days_since_halving+'d since halving':'n/a'}</span>
+      <b>Macro events</b><span>${macro.available?(macro.events||[]).slice(0,2).map(e=>e.name+' '+e.date+' ('+e.days_until+'d)'+(e.days_until<=2?' ⚠️':'')).join('<br>')||'none soon':'n/a'}</span>
+      <b>Geopolitics</b><span>${geo.available&&geo.count?geo.count+' headline hit(s) ⚠️ — '+esc(geo.hits[0].keyword):'calm'}</span>
+      <b>Social/Influencer</b><span>${soc.available&&soc.count?soc.count+' mention(s) — '+esc(soc.hits[0].keyword):'quiet'}</span>
+    </div>`);
+
+  const mem=d.memory||{};
+  html += card('STATE MEMORY — SIGNAL STABILITY', `
+    <div class="kv">
+      <b>Status</b><span>${mem.status||'—'}</span>
+      ${mem.stable_since?`<b>Stable since</b><span>${new Date(mem.stable_since).toLocaleTimeString()}</span>`:''}
+      ${mem.reaffirms?`<b>Reaffirmed</b><span>${mem.reaffirms}× (same state — no new signal)</span>`:''}
+      ${mem.flips_1h?`<b>HTF flips (1h)</b><span>${mem.flips_1h}</span>`:''}
+    </div>
+    ${(mem.changes||[]).length?`<div class="note" style="margin-top:6px">${mem.changes.map(c=>'• '+esc(c)).join('<br>')}</div>`:''}
+    ${mem.whipsaw?`<div class="err" style="margin-top:6px">⚠️ Whipsaw guard active — signals suppressed until market settles.</div>`:''}
+    <div class="note" style="margin-top:6px">Signals change only when the market STATE changes — not every 30s refresh.</div>`);
+
   html += card('HUMAN APPROVAL QUEUE', '<div id="queue">loading…</div>');
   html += card('RECENT SIGNALS', '<div id="hist">loading…</div>');
   html += card('LEARNING — backtest & calibration', '<div id="learn">loading…</div>', true);
@@ -242,6 +301,57 @@ function render(d){
 
   document.getElementById('app').innerHTML = html;
   loadPending(); loadHistory(); loadLearning();
+  const symE=document.getElementById('sym'); const tfE=document.getElementById('tf');
+  loadChart((symE?symE.value:'BTCUSDT').toUpperCase(), tfE?tfE.value:'15m');
+}
+
+async function loadChart(symbol, tf){
+  const host=document.getElementById('chart'); if(!host) return;
+  try{
+    const d=await (await fetch(`/api/candles?symbol=${symbol}&tf=${tf}&limit=90`)).json();
+    if(d.error){ host.innerHTML='<span class="err">'+esc(d.error)+'</span>'; return; }
+    host.innerHTML=chartSVG(d.candles||[]);
+  }catch(e){ host.innerHTML='<span class="err">chart error</span>'; }
+}
+
+function chartSVG(cs){
+  if(!cs || !cs.length) return '<span class="muted">no candles</span>';
+  const W=820, H=230, padR=14, padT=10, volH=44;
+  const prices=cs.flatMap(c=>[+c.high,+c.low]);
+  const lo=Math.min(...prices), hi=Math.max(...prices);
+  const volMax=Math.max(...cs.map(c=>+c.volume||0));
+  const n=cs.length, cw=Math.floor((W-padR)/n);
+  const y=p=> padT+(H-volH-padT)*(1-(p-lo)/(hi-lo||1));
+  const bodyTop=p=> padT+(H-volH-padT)*(1-(p-lo)/(hi-lo||1));
+  // EMA20/50 over closes
+  const ema=(span)=>{ const out=[]; let k=2/(span+1), prev=null;
+    for(const c of cs){ const v=+c.close; prev=prev==null?v:v+k*(v-prev); out.push(prev); } return out; };
+  const e20=ema(20), e50=ema(50);
+  let s=`<svg width="100%" viewBox="0 0 ${W} ${H}" style="background:#0e1524;border-radius:8px">`;
+  // gridlines
+  for(let i=0;i<5;i++){ const p=lo+(hi-lo)*i/4; const yy=y(p);
+    s+=`<line x1="0" y1="${yy}" x2="${W}" y2="${yy}" stroke="#1b2740" stroke-width="1"/>
+        <text x="4" y="${yy-3}" fill="#5b7290" font-size="9">${fmt(p,0)}</text>`; }
+  cs.forEach((c,i)=>{
+    const x=i*cw, up=+c.close>=+c.open;
+    const col=up?'#22c55e':'#ef4444';
+    const oy=bodyTop(+c.open), cy=bodyTop(+c.close);
+    const wy=bodyTop(+c.high), ly=bodyTop(+c.low);
+    const hb=Math.max(1, Math.abs(cy-oy));
+    s+=`<line x1="${x+cw/2}" y1="${wy}" x2="${x+cw/2}" y2="${ly}" stroke="${col}" stroke-width="1"/>
+        <rect x="${x+1}" y="${Math.min(oy,cy)}" width="${Math.max(1,cw-3)}" height="${hb}" fill="${col}" opacity="0.9"/>`;
+    // volume bar
+    const vh=Math.max(1,(+c.volume/volMax)*volH);
+    s+=`<rect x="${x+2}" y="${H-vh}" width="${Math.max(1,cw-5)}" height="${vh}" fill="${col}" opacity="0.25"/>`;
+  });
+  // EMA overlays
+  const px=i=>i*cw+cw/2;
+  e20.forEach((v,i)=>{ if(i>0) s+=`<line x1="${px(i-1)}" y1="${y(e20[i-1])}" x2="${px(i)}" y2="${y(v)}" stroke="#3b82f6" stroke-width="1.4" opacity="0.85"/>`; });
+  e50.forEach((v,i)=>{ if(i>0) s+=`<line x1="${px(i-1)}" y1="${y(e50[i-1])}" x2="${px(i)}" y2="${y(v)}" stroke="#f59e0b" stroke-width="1.2" opacity="0.8"/>`; });
+  s+=`<text x="${W-70}" y="${H-volH-6}" fill="#3b82f6" font-size="9">EMA20</text>
+      <text x="${W-30}" y="${H-volH-6}" fill="#f59e0b" font-size="9">EMA50</text>`;
+  s+='</svg>';
+  return s;
 }
 
 async function load(force){
@@ -451,6 +561,28 @@ def make_app() -> Flask:
             "mentor": mentor(payload),
             "feedback": feedback,
         })
+
+    @app.get("/api/candles")
+    def api_candles():
+        """OHLCV for the inline candlestick chart (no external libs)."""
+        symbol = request.args.get("symbol", SYMBOL).upper()
+        tf = request.args.get("tf", TIMEFRAME)
+        limit = min(int(request.args.get("limit", 90)), 300)
+        try:
+            df = BinanceClient().klines(symbol, tf, limit)
+            return jsonify({"candles": df.to_dict("records"),
+                            "symbol": symbol, "tf": tf})
+        except ConnectionError as exc:
+            return jsonify({"error": str(exc)}), 502
+
+    @app.get("/api/state")
+    def api_state():
+        symbol = request.args.get("symbol", SYMBOL).upper()
+        tf = request.args.get("tf", TIMEFRAME)
+        from brain.state_memory import SignalMemory
+        mem = SignalMemory()
+        return jsonify({"state": mem.get_state(symbol, tf),
+                        "events": mem.history(symbol, tf, limit=15)})
 
     @app.get("/api/health")
     def health():

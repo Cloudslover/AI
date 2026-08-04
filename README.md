@@ -40,7 +40,8 @@ with connectors for your **private CryptoDada website** and **Discord group**.
 | **Self-improvement** | `python main.py learn` recomputes a per-setup calibration profile from backtest outcomes — boosts positive-expectancy plans, dampens (or filters) negative ones. The engine literally gets better with every backtest. |
 | **Coach (teaching)** | `python main.py coach` explains *why* the engine said what it said, mentors you through the top setup step-by-step, gives personal feedback on your own approvals/rejections, and ships a full trading glossary. |
 | **CI** | GitHub Actions runs the offline test suite on every push |
-| **Web dashboard** | **`python main.py`** opens the all-in-one dashboard: live signal + lifecycle badge, plans, feature snapshot, score breakdown, market context, **human approval queue with Approve/Reject buttons**, recent signals (click a row for detail + decide), **learning dashboard** (backtest win-rates + calibration), coach panel, and LLM narrative — auto-refreshing. |
+| **Web dashboard** | **`python main.py`** opens the all-in-one dashboard: live signal + lifecycle badge, **candlestick chart**, **multi-timeframe table**, **what-the-market-offers styles grid**, **context panel** (news/macro/geopolitics/cycle/social/equities), **state memory panel** (signal stability), plans, feature snapshot, score breakdown, human approval queue, recent signals, learning dashboard, coach, LLM narrative — auto-refreshing. |
+| **Human-like thinking** | **Multi-timeframe** (1d/4h/1h/15m/5m → HTF bias + LTF execution + alignment score), **full market context** (fear&greed, BTC dominance, S&P/Nasdaq/DXY, macro calendar FOMC/CPI/NFP, halving cycle, geopolitics, influencer/social pulse), **trading-style signals** (Scalp/Day/Swing/Momentum/Position — "what the market provides, we take"), and **state memory** so signals only change when the market state changes — no random 30s signals. |
 
 ---
 
@@ -115,7 +116,13 @@ python main.py signal 42             # full detail + lifecycle trail
 python main.py execute 42            # mark approved trade as executed
 python main.py close 42              # record the outcome, close the loop
 
-# 9. self-improvement — recalibrate from what the engine measured
+# 9. FULL human-trader analysis (MTF + context + styles + memory)
+python main.py analyze --symbol BTCUSDT --tf 15m
+
+# 10. what the AI remembers about this market (state memory)
+python main.py state --symbol BTCUSDT --tf 15m
+
+# 11. self-improvement — recalibrate from what the engine measured
 python main.py learn
 
 # 10. coach — teaching mode
@@ -250,7 +257,7 @@ the output is never empty.
 ## 🧪 Tests
 
 ```bash
-python -m pytest tests/ -q      # 52 tests, fully offline (synthetic data)
+python -m pytest tests/ -q      # 69 tests, fully offline (synthetic data)
 ```
 
 Covers: indicator math & no-look-ahead, structure detection (BOS/CHOCH, FVG,
@@ -334,6 +341,31 @@ CREATED ─▶ PENDING_REVIEW ─▶ APPROVED ─▶ EXECUTED ─▶ CLOSED (out
   Coach can later teach from *your* decision pattern.
 * `python main.py signal <id>` shows the full lifecycle trail.
 
+## 🧠 Human-like thinking: MTF + context + styles + state memory
+
+**How it thinks like a trader:**
+
+1. **Multi-timeframe** (`engine/mtf.py`) — reads 1d → 4h → 1h → 15m → 5m like a
+   trader: the higher frames set the **bias**, the lower frames **time the
+   entry**. Output: HTF/LTF bias, an alignment score (-100..+100), and support/
+   resistance carried down from the higher frames.
+2. **Market context** (`brain/context.py`) — everything that moves BTC:
+   fear & greed, BTC/ETH dominance, S&P500 / Nasdaq / DXY / gold, macro
+   calendar (FOMC, CPI, NFP — flags high-impact events within 48h), the
+   halving cycle phase, geopolitical headline scan, influencer/social pulse.
+   Every source degrades gracefully if unreachable.
+3. **Trading styles** (`brain/styles.py`) — "what the market provides, we
+   take": Scalp / Day / Swing / Momentum / Position signals, each with
+   direction, confidence, horizon, and a plain reason. When nothing is clean,
+   it says **stand aside** and why.
+4. **State memory** (`brain/state_memory.py`) — the anti-spam brain. It
+   fingerprints the market state; if nothing changed, the signal is
+   **reaffirmed** (dashboard shows "stable since …", `reaffirms` counter), not
+   re-emitted. New signals fire only on a real state change (HTF flip,
+   structure event, style change), with per-style cooldowns (Scalp 15m …
+   Position 24h) and a **whipsaw guard** that suppresses signals when the HTF
+   flips too often. Memory persists in SQLite (`market_state` + `state_events`).
+
 ## 🧠 Self-improvement — the closed learning loop
 
 1. **Backtest** (`backtest --save`) grades every plan → outcomes stored in DB.
@@ -382,7 +414,21 @@ crypto-brain/
 │   └── signal_engine.py     # orchestrator → final JSON
 ├── brain/
 │   ├── coach.py             # teaching layer: explain / mentor / feedback / glossary
-│   └── calibrator.py        # self-improvement: expectancy → calibration profile
+│   ├── calibrator.py        # self-improvement: expectancy → calibration profile
+│   ├── context.py           # fear&greed, dominance, equities, macro, cycle, social, geopolitics
+│   ├── styles.py            # trading-style classification (Scalp/Day/Swing/Momentum/Position)
+│   ├── state_memory.py      # market-state memory + signal stability (anti-spam, whipsaw guard)
+│   └── full_pipeline.py     # combines MTF + context + engine + styles + memory
+├── engine/
+│   ├── indicators.py        # RSI MACD EMA VWAP ADX BB Supertrend WaveTrend …
+│   ├── structure.py         # swings, BOS/CHOCH, OB, FVG, liquidity, sweeps
+│   ├── mtf.py               # multi-timeframe analysis (HTF bias → LTF execution)
+│   ├── features.py          # labeled market snapshot (60 conditions)
+│   ├── scorer.py            # weighted condition scoring → confidence
+│   ├── rules.py             # IF/THEN conditional plan generator
+│   ├── lifecycle.py         # signal state machine + human approval gate
+│   ├── calibration_hook.py  # applies the self-improvement profile to plans
+│   └── signal_engine.py     # orchestrator → final JSON
 ├── data/
 │   ├── binance_client.py    # geo-aware Binance market data
 │   ├── database.py          # SQLite learning store (scans/plans/decisions/backtests)

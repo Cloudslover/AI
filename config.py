@@ -69,3 +69,8 @@ CALIBRATE_MAX_MULT = float(os.getenv("CALIBRATE_MAX_MULT", "1.25"))
 CALIBRATE_MIN_MULT = float(os.getenv("CALIBRATE_MIN_MULT", "0.6"))
 CALIBRATE_FILTER = os.getenv("CALIBRATE_FILTER", "false").lower() in ("1", "true", "yes")
 CALIBRATE_FILTER_THRESHOLD = float(os.getenv("CALIBRATE_FILTER_THRESHOLD", "-0.35"))  # R, negative
+
+# ── State memory / signal stability (anti-spam, anti-whipsaw) ────────────
+SIGNAL_COOLDOWN_MINUTES = int(os.getenv("SIGNAL_COOLDOWN_MINUTES", "30"))  # global floor
+FLIP_PRICE_THRESHOLD_PCT = float(os.getenv("FLIP_PRICE_THRESHOLD_PCT", "0.8"))
+MAX_FLIPS_PER_HOUR = int(os.getenv("MAX_FLIPS_PER_HOUR", "2"))

@@ -45,17 +45,9 @@ def _load_calibration() -> dict:
 def run_scan(symbol: str, timeframe: str, bars: int, with_context: bool = True,
              with_llm: bool = False, save_db: bool = True,
              auto_approve: bool = False) -> dict:
-    client = _client()
-    df = client.klines(symbol, timeframe, bars)
-    calib = _load_calibration()
-    out = analyze_frame(df, symbol=symbol, timeframe=timeframe,
-                        min_confidence=MIN_CONFIDENCE, default_rr=DEFAULT_RISK_REWARD,
-                        calibration=calib)
-    payload = out.as_json()
-
-    if with_context:
-        ctx = client.market_context(symbol)
-        payload["market_context"] = ctx
+    from brain.full_pipeline import analyze_full
+    payload = analyze_full(symbol, timeframe, bars,
+                           with_context=with_context, with_memory=True)
 
     if with_llm:
         from ai.llm_brain import LLMBrain
@@ -67,18 +59,26 @@ def run_scan(symbol: str, timeframe: str, bars: int, with_context: bool = True,
         from data.database import SignalDB
         from engine.lifecycle import reviewable
         with SignalDB() as db:
-            scan_id = db.save_scan(payload)
+            sig = payload.get("signal", {})
+            existing = db.conn.execute(
+                "SELECT id, status FROM scans WHERE signal_id=?",
+                (sig.get("signal_id"),)).fetchone()
+            if existing:
+                scan_id = existing["id"]
+                status = existing["status"]
+            else:
+                scan_id = db.save_scan(payload)
+                status = "PENDING_REVIEW" if reviewable(sig) else "CREATED"
             payload["scan_id"] = scan_id
-            if auto_approve and reviewable(payload.get("signal", {})):
-                db.update_status(scan_id, "APPROVED", note="auto-approve",
-                                 reviewer="auto")
+            if auto_approve and reviewable(sig):
+                db.update_status(scan_id, "APPROVED", note="auto-approve", reviewer="auto")
                 payload["lifecycle"] = {"status": "APPROVED",
                                         "note": "auto-approved (--auto-approve)"}
             else:
                 payload["lifecycle"] = {
-                    "status": "PENDING_REVIEW" if reviewable(payload.get("signal", {})) else "CREATED",
+                    "status": status,
                     "note": ("awaiting human approval — `python main.py review`"
-                             if reviewable(payload.get("signal", {})) else
+                             if status == "PENDING_REVIEW" else
                              "monitor-only signal (no action required)"),
                 }
     return payload
@@ -111,6 +111,31 @@ def _print_human(payload: dict) -> None:
         print(f"   entry {sig['entry']:>12,.2f}   SL {sig['stop_loss']:>10,.2f}   "
               f"TP {sig['take_profit']:>12,.2f}   RR {sig['risk_reward']:.2f}")
     print(f"   reason: {sig['reason']}")
+
+    # Styles summary (what the market is offering)
+    styles = payload.get("styles") or {}
+    if styles:
+        print("-" * 72)
+        print("   STYLES:")
+        for s in ("Scalp", "Day", "Swing", "Momentum", "Position"):
+            v = styles.get("styles", {}).get(s, {})
+            if v and v.get("available"):
+                print(f"     ✓ {s:<10} {v.get('direction')} {v.get('confidence')}%  "
+                      f"({v.get('horizon')})  {v.get('reason', '')[:70]}")
+        if styles.get("stand_aside"):
+            print(f"     · stand aside: {'; '.join(styles['stand_aside'])}")
+
+    # Memory / stability
+    mem = payload.get("memory") or {}
+    if mem:
+        st = mem.get("status")
+        print("-" * 72)
+        print(f"   STATE MEMORY: {st}" + (f"  (stable, reaffirmed ×{mem.get('reaffirms', 0)})" if st == "SAME" else ""))
+        for c in mem.get("changes", [])[:4]:
+            print(f"     · {c}")
+        if mem.get("whipsaw"):
+            print("     ⚠️ whipsaw guard active — signals suppressed")
+
     print("-" * 72)
     for p in payload.get("plans", []):
         print(f"   [{p['confidence']:>3}% {p['confidence_label']:<6}] {p['type']:<22} "
@@ -119,6 +144,20 @@ def _print_human(payload: dict) -> None:
     if scores:
         print(f"   scores → bull {scores.get('bull', {}).get('score', 0)}  |  "
               f"bear {scores.get('bear', {}).get('score', 0)}")
+
+    mtf = payload.get("mtf") or {}
+    if mtf:
+        print("-" * 72)
+        views = mtf.get("views", {})
+        print("   MTF: " + "  ".join(
+            f"{tf}:{v.get('trend', '?')[:1].upper()}" if v.get("available") else f"{tf}:—"
+            for tf, v in views.items()))
+        a = mtf.get("alignment", {})
+        print(f"   HTF {mtf.get('htf_bias')} | LTF {mtf.get('ltf_bias')} | "
+              f"alignment {a.get('score')} ({a.get('label')})")
+        kl = mtf.get("key_levels", {})
+        print(f"   support {kl.get('support', [])}  resistance {kl.get('resistance', [])}")
+
     if payload.get("market_context", {}).get("futures"):
         ctx = payload["market_context"]
         print(f"   funding {ctx['funding_rate_pct']}%  OI {ctx['open_interest']:,.0f}  "
@@ -336,6 +375,118 @@ def cmd_glossary(args) -> int:
     return 0
 
 
+def _print_context(ctx: dict) -> None:
+    print("   CONTEXT (what affects the market):")
+    fng = ctx.get("fear_greed") or {}
+    if fng.get("available"):
+        print(f"     fear&greed: {fng['value']} ({fng['label']})")
+    dom = ctx.get("dominance") or {}
+    if dom.get("available"):
+        print(f"     BTC dom {dom['btc_dominance']}% · ETH {dom['eth_dominance']}% · "
+              f"total cap ${dom['total_market_cap_usd']/1e12:.2f}T "
+              f"({dom['market_cap_change_24h_pct']:+.2f}% 24h)")
+    eq = ctx.get("equities") or {}
+    if eq.get("available"):
+        cp = eq.get("change_pct", {})
+        print(f"     S&P500 {cp.get('^spx')}% · Nasdaq {cp.get('^ndq')}% · "
+              f"DXY {cp.get('dx.f')}% · Gold {cp.get('xauusd')}%")
+    macro = ctx.get("macro") or {}
+    if macro.get("available"):
+        for e in macro.get("events", [])[:4]:
+            flag = " ⚠️" if e.get("days_until", 99) <= 2 else ""
+            print(f"     {e['date']} {e['name']} (in {e['days_until']}d){flag}")
+    cyc = ctx.get("cycle") or {}
+    if cyc.get("available"):
+        print(f"     cycle: {cyc['phase']} · {cyc['days_since_halving']}d since halving · "
+              f"{cyc.get('position_vs_200d')}")
+    geo = ctx.get("geopolitics") or {}
+    if geo.get("available") and geo.get("count"):
+        print(f"     ⚠️ geopolitics: {geo['count']} headline hit(s) — {geo['hits'][0]['keyword']}")
+    social = ctx.get("social") or {}
+    if social.get("available") and social.get("count"):
+        print(f"     social/influencer mentions: {social['count']} — "
+              f"{social['hits'][0]['keyword']}")
+    reg = ctx.get("risk_regime") or {}
+    if reg.get("regime"):
+        print(f"     risk regime: {reg['regime']} ({reg.get('score')}) — "
+              f"{' · '.join(reg.get('parts', [])[:5])}")
+
+
+def cmd_analyze(args) -> int:
+    """Full 'human trader' analysis: MTF + context + styles + memory."""
+    from brain.full_pipeline import analyze_full
+    payload = analyze_full(args.symbol, args.tf, args.bars, with_context=True)
+    sig = payload["signal"]
+    print("=" * 72)
+    print(f"🧠 FULL ANALYSIS — {args.symbol} {args.tf}")
+    print(f"   {sig['action']} {sig['confidence']} — {sig['reason']}")
+    mtf = payload.get("mtf", {})
+    a = mtf.get("alignment", {})
+    print(f"   HTF {mtf.get('htf_bias')} | LTF {mtf.get('ltf_bias')} | "
+          f"alignment {a.get('score')} ({a.get('label')})")
+    kl = mtf.get("key_levels", {})
+    print(f"   support {kl.get('support')}  resistance {kl.get('resistance')}")
+    print("-" * 72)
+    _print_context(payload.get("context", {}))
+    print("-" * 72)
+    styles = payload.get("styles", {})
+    print("   WHAT THE MARKET OFFERS:")
+    if styles.get("market_offering"):
+        for s in styles["market_offering"]:
+            v = styles["styles"][s]
+            print(f"     ✓ {s}: {v['direction']} {v['confidence']}% — {v['reason']}")
+    else:
+        print("     nothing clean right now — " + "; ".join(styles.get("stand_aside", [])))
+    mem = payload.get("memory", {})
+    if mem:
+        print("-" * 72)
+        print(f"   STATE MEMORY: {mem.get('status')}" +
+              (f" — stable since {time.strftime('%H:%M', time.localtime(mem.get('stable_since', 0)/1000))}" if mem.get('stable_since') else ""))
+        for c in mem.get("changes", [])[:5]:
+            print(f"     · {c}")
+    if args.json:
+        import json as _json
+        print(_json.dumps(payload, indent=2, default=str))
+    return 0
+
+
+def cmd_state(args) -> int:
+    """Show the AI's remembered market state + event log."""
+    from brain.state_memory import SignalMemory
+    mem = SignalMemory()
+    row = mem.get_state(args.symbol, args.tf)
+    print("=" * 66)
+    print(f"STATE MEMORY — {args.symbol} {args.tf}")
+    if not row:
+        print("No state recorded yet. Run `python main.py analyze` or `scan` first.")
+        return 0
+    print(f"  htf_bias     : {row['htf_bias']}")
+    print(f"  alignment    : {row['alignment']}")
+    print(f"  last event   : {row['last_event']}")
+    print(f"  price        : {row['price']:,.2f}")
+    print(f"  state hash   : {row['state_hash']}")
+    print(f"  reaffirms    : {row['reaffirms']} (same-state refreshes)")
+    print(f"  flips (1h)   : {row['flips_1h']}")
+    print(f"  updated      : {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(row['updated_at']/1000))}")
+    try:
+        import json as _json
+        st = _json.loads(row.get("styles_json") or "{}")
+        print("  style memory :")
+        for s in ("Scalp", "Day", "Swing", "Momentum", "Position"):
+            v = st.get(s) or {}
+            since = v.get("since_ts")
+            print(f"    {s:<10} since={time.strftime('%H:%M', time.localtime(since/1000)) if since else '—'}  "
+                  f"cooldown={v.get('cooldown_min', '?')}m")
+    except Exception:
+        pass
+    print("-" * 66)
+    print("  recent state events:")
+    for e in mem.history(args.symbol, args.tf, limit=10):
+        print(f"    {time.strftime('%m-%d %H:%M', time.localtime(e['ts']/1000))}  "
+              f"{e['kind']:<8} {e['detail'][:80]}")
+    return 0
+
+
 def cmd_stats(args) -> int:
     from data.database import SignalDB
 
@@ -474,6 +625,18 @@ def main() -> int:
     p_gl = sub.add_parser("glossary", help="list trading terms used by the engine")
     p_gl.add_argument("term", nargs="?", default=None)
     p_gl.set_defaults(func=cmd_glossary)
+
+    p_an = sub.add_parser("analyze", help="full human-trader analysis (MTF + context + styles + memory)")
+    p_an.add_argument("--symbol", default=SYMBOL)
+    p_an.add_argument("--tf", default=TIMEFRAME)
+    p_an.add_argument("--bars", type=int, default=BARS)
+    p_an.add_argument("--json", action="store_true")
+    p_an.set_defaults(func=cmd_analyze)
+
+    p_st = sub.add_parser("state", help="show the AI's remembered market state + event log")
+    p_st.add_argument("--symbol", default=SYMBOL)
+    p_st.add_argument("--tf", default=TIMEFRAME)
+    p_st.set_defaults(func=cmd_state)
 
     p_web = sub.add_parser("web", help="run the web dashboard")
     p_web.add_argument("--host", default=None)
