@@ -2,18 +2,20 @@
 
 These catch the exact class of bug that broke the dashboard for the user:
 a duplicate `const` declaration (SyntaxError) that makes the whole <script>
-refuse to run, leaving the page stuck at "Loading…" forever — invisible to
-server-side curl checks.
+refuse to run, or a field-name mismatch that throws only when real data has
+non-empty values (e.g. reading `soc.hits[0]` when the backend returns
+`influencer_mentions`).
 
 When `node` is available (CI has it), we:
   1. extract the <script> from the HTML template and run `node --check`
-  2. execute render() with a synthetic payload under stubbed DOM/fetch,
-     asserting every card is produced
+  2. execute render() against a synthetic payload AND against a real captured
+     payload (data_samples/example_payload.json), asserting every card appears
 
 If node is missing the tests skip (they never fail a machine without node).
 """
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
@@ -24,8 +26,13 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 APP = ROOT / "web" / "app.py"
+SAMPLE = ROOT / "data_samples" / "example_payload.json"
 
 NODE = shutil.which("node")
+
+CARDS = ["LIVE SIGNAL", "CANDLESTICK", "MULTI-TIMEFRAME", "WHAT THE MARKET OFFERS",
+         "CONTEXT — WHAT AFFECTS PRICE", "STATE MEMORY", "HUMAN APPROVAL QUEUE",
+         "RECENT SIGNALS", "LEARNING", "COACH", "CONNECTIONS"]
 
 
 def _extract_js() -> str:
@@ -83,12 +90,49 @@ def _synthetic_payload() -> dict:
                     "macro": {"available": True, "events": []},
                     "cycle": {"available": True, "phase": "expansion"},
                     "geopolitics": {"available": True, "count": 0},
-                    "social": {"available": True, "count": 0},
+                    "social": {"available": True, "count": 1,
+                               "influencer_mentions": [{"keyword": "etf"}]},
                     "risk_regime": {"regime": "neutral"}},
         "memory": {"status": "SAME", "reaffirms": 2, "changes": []},
         "market_context": {"futures": False},
         "lifecycle": {"status": "PENDING_REVIEW", "note": "awaiting"},
     }
+
+
+def _run_harness(payload_json: str) -> None:
+    js = _extract_js()
+    harness = f"""
+    const payload = {payload_json};
+    const elements = {{}};
+    function el(id){{ if(!elements[id]) elements[id]={{ innerHTML:'', value:'BTCUSDT',
+      textContent:'', checked:true, disabled:false, style:{{}}, addEventListener:()=>{{}},
+      querySelector:()=>null }}; return elements[id]; }}
+    global.window = {{}};
+    global.document = {{ getElementById: el, addEventListener: ()=>{{}} }};
+    global.fetch = async (url) => ({{ json: async () => {{
+      if(String(url).includes('/api/candles')) return {{ candles: [] }};
+      return {{}};
+    }} }});
+    global.AbortController = class {{ constructor(){{ this.signal={{}}; }} abort(){{}} }};
+    global.setInterval = () => 0; global.clearInterval = () => {{}};
+    global.setTimeout = () => 0; global.clearTimeout = () => {{}};
+    {js}
+    const cards = {json.dumps(CARDS)};
+    render(payload);
+    const html = elements['app'].innerHTML;
+    const missing = cards.filter(c => !html.includes(c));
+    if (missing.length) {{ console.error('missing cards:', missing); process.exit(1); }}
+    if (!html.length) {{ console.error('empty render'); process.exit(1); }}
+    console.log('render OK, cards', cards.length);
+    """
+    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
+        f.write(harness)
+        path = f.name
+    try:
+        r = subprocess.run([NODE, path], capture_output=True, text=True)
+        assert r.returncode == 0, f"render failed:\n{r.stdout}\n{r.stderr}"
+    finally:
+        Path(path).unlink(missing_ok=True)
 
 
 @pytest.mark.skipif(NODE is None, reason="node not installed")
@@ -105,41 +149,15 @@ def test_dashboard_js_syntax():
 
 
 @pytest.mark.skipif(NODE is None, reason="node not installed")
-def test_dashboard_render_produces_all_cards():
-    js = _extract_js()
-    payload = _synthetic_payload()
-    import json as _json
-    harness = f"""
-    const payload = {_json.dumps(payload)};
-    const elements = {{}};
-    function el(id){{ if(!elements[id]) elements[id]={{ innerHTML:'', value:'BTCUSDT',
-      textContent:'', checked:true, disabled:false, style:{{}}, addEventListener:()=>{{}},
-      querySelector:()=>null }}; return elements[id]; }}
-    global.window = {{}};
-    global.document = {{ getElementById: el, addEventListener: ()=>{{}} }};
-    global.fetch = async (url) => ({{ json: async () => {{
-      if(String(url).includes('/api/candles')) return {{ candles: [] }};
-      return {{}};
-    }} }});
-    global.AbortController = class {{ constructor(){{ this.signal={{}}; }} abort(){{}} }};
-    global.setInterval = () => 0; global.clearInterval = () => {{}};
-    global.setTimeout = () => 0; global.clearTimeout = () => {{}};
-    {js}
-    const cards = ['LIVE SIGNAL','CANDLESTICK','MULTI-TIMEFRAME','WHAT THE MARKET OFFERS',
-      'CONTEXT — WHAT AFFECTS PRICE','STATE MEMORY','HUMAN APPROVAL QUEUE','RECENT SIGNALS',
-      'LEARNING','COACH','CONNECTIONS'];
-    render(payload);
-    const html = elements['app'].innerHTML;
-    const missing = cards.filter(c => !html.includes(c));
-    if (missing.length) {{ console.error('missing cards:', missing); process.exit(1); }}
-    if (!html.length) {{ console.error('empty render'); process.exit(1); }}
-    console.log('render OK, cards', cards.length);
-    """
-    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
-        f.write(harness)
-        path = f.name
-    try:
-        r = subprocess.run([NODE, path], capture_output=True, text=True)
-        assert r.returncode == 0, f"render failed:\n{r.stdout}\n{r.stderr}"
-    finally:
-        Path(path).unlink(missing_ok=True)
+def test_render_with_synthetic_payload():
+    _run_harness(json.dumps(_synthetic_payload()))
+
+
+@pytest.mark.skipif(NODE is None, reason="node not installed")
+def test_render_with_real_sample_payload():
+    """Renders with a REAL captured payload (data_samples/example_payload.json)
+    so field-name mismatches (e.g. social.influencer_mentions vs .hits) that
+    only appear with non-empty real data are caught."""
+    assert SAMPLE.exists(), "example_payload.json missing"
+    payload = json.loads(SAMPLE.read_text())
+    _run_harness(json.dumps(payload))

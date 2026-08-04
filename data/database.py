@@ -273,9 +273,12 @@ class SignalDB:
                            ROUND(AVG(rr_achieved),2) avg_rr
                     FROM backtest_results {where}"""
             row = dict(self.conn.execute(q).fetchone())
+            for k in ("wins", "losses", "opens", "not_triggered"):
+                row[k] = row[k] or 0
+            row["n"] = row["n"] or 0
             decided = row["wins"] + row["losses"]
             row["win_rate"] = round(row["wins"] / decided, 3) if decided else None
-            row["n"] = row["n"] or 0
+            row["avg_rr"] = row["avg_rr"] or 0.0
             return row
 
         by_type = [dict(r) for r in self.conn.execute(
@@ -285,7 +288,11 @@ class SignalDB:
                       ROUND(AVG(rr_achieved),2) avg_rr
                FROM backtest_results GROUP BY plan_type ORDER BY n DESC""").fetchall()]
         for r in by_type:
-            decided = (r["wins"] or 0) + (r["losses"] or 0)
+            r["n"] = r["n"] or 0
+            r["wins"] = r["wins"] or 0
+            r["losses"] = r["losses"] or 0
+            r["avg_rr"] = r["avg_rr"] or 0.0
+            decided = r["wins"] + r["losses"]
             r["win_rate"] = round(r["wins"] / decided, 3) if decided else None
 
         by_conf = [dict(r) for r in self.conn.execute(
@@ -298,7 +305,11 @@ class SignalDB:
                       ROUND(AVG(rr_achieved),2) avg_rr
                FROM backtest_results GROUP BY bucket""").fetchall()]
         for r in by_conf:
-            decided = (r["wins"] or 0) + (r["losses"] or 0)
+            r["n"] = r["n"] or 0
+            r["wins"] = r["wins"] or 0
+            r["losses"] = r["losses"] or 0
+            r["avg_rr"] = r["avg_rr"] or 0.0
+            decided = r["wins"] + r["losses"]
             r["win_rate"] = round(r["wins"] / decided, 3) if decided else None
 
         return {"overall": agg(), "by_type": by_type, "by_confidence": by_conf}

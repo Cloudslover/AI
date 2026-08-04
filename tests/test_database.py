@@ -62,6 +62,21 @@ def test_plan_stats(tmp_path):
     db.close()
 
 
+def test_backtest_stats_empty_db_does_not_crash(tmp_path):
+    """Regression: a fresh/empty DB used to crash backtest_stats with
+    'None + None' (SUM returns NULL over an empty table)."""
+    db = SignalDB(tmp_path / "t.db")
+    stats = db.backtest_stats()
+    o = stats["overall"]
+    assert o["n"] == 0
+    assert o["wins"] == 0 and o["losses"] == 0
+    assert o["win_rate"] is None
+    assert o["avg_rr"] == 0.0
+    assert stats["by_type"] == []
+    assert stats["by_confidence"] == []
+    db.close()
+
+
 def test_backtest_rows_and_stats(tmp_path):
     db = SignalDB(tmp_path / "test.db")
     rows = [

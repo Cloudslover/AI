@@ -135,8 +135,20 @@ def compute_payload(symbol: str, tf: str, save: bool = True, use_cache: bool = T
     t.join(timeout=_SCAN_TIMEOUT)
 
     if "payload" not in result:
-        # Fallback: engine-only quick scan so the page never hangs.
-        payload = _basic_scan(symbol, tf, save=save)
+        # Fallback: engine-only quick scan so the page never hangs or 500s.
+        try:
+            payload = _basic_scan(symbol, tf, save=save)
+        except Exception as exc:
+            payload = {
+                "signal": {"signal_id": f"{symbol}_{int(time.time()*1000)}",
+                           "timestamp": int(time.time()*1000), "asset": symbol,
+                           "action": "NO TRADE", "entry": None, "stop_loss": None,
+                           "take_profit": None, "risk_reward": 0,
+                           "confidence": "LOW", "timeframe": tf,
+                           "reason": f"scan failed: {exc}", "signal_type": "ERROR"},
+                "plans": [], "snapshot": {"features": {}, "scores": {}},
+                "error": str(exc), "lifecycle": {"status": "ERROR", "note": str(exc)},
+            }
         _CACHE.update(payload=payload, ts=time.time())
         return payload
 
@@ -354,8 +366,8 @@ function render(d){
       <b>Dollar (DXY)</b><span>${eq.available?cp['dx.f']+'%':'n/a'}</span>
       <b>Cycle phase</b><span>${cyc.available?cyc.phase+' · '+cyc.days_since_halving+'d since halving':'n/a'}</span>
       <b>Macro events</b><span>${macro.available?(macro.events||[]).slice(0,2).map(e=>e.name+' '+e.date+' ('+e.days_until+'d)'+(e.days_until<=2?' ⚠️':'')).join('<br>')||'none soon':'n/a'}</span>
-      <b>Geopolitics</b><span>${geo.available&&geo.count?geo.count+' headline hit(s) ⚠️ — '+esc(geo.hits[0].keyword):'calm'}</span>
-      <b>Social/Influencer</b><span>${soc.available&&soc.count?soc.count+' mention(s) — '+esc(soc.hits[0].keyword):'quiet'}</span>
+      <b>Geopolitics</b><span>${geo.available&&geo.count&&geo.hits&&geo.hits[0]?geo.count+' headline hit(s) ⚠️ — '+esc(geo.hits[0].keyword):'calm'}</span>
+      <b>Social/Influencer</b><span>${soc.available&&soc.count&&soc.influencer_mentions&&soc.influencer_mentions[0]?soc.count+' mention(s) — '+esc(soc.influencer_mentions[0].keyword):(soc.available&&soc.count?soc.count+' mention(s)':'quiet')}</span>
     </div>`);
 
   const mem=d.memory||{};
@@ -439,13 +451,15 @@ function chartSVG(cs){
   return s;
 }
 
-async function load(force){
+async function load(force, quiet){
   const sym=document.getElementById('sym').value.trim().toUpperCase()||'BTCUSDT';
   const tf=document.getElementById('tf').value;
   let t0=Date.now();
   const app=document.getElementById('app');
-  app.innerHTML = `<div class="card" style="grid-column:1/-1"><h2>Scanning ${sym} ${tf}</h2>
-    <div class="muted" id="scanstatus">fetching timeframes + news + macro + context…</div></div>`;
+  if(!quiet){
+    app.innerHTML = `<div class="card" style="grid-column:1/-1"><h2>Scanning ${sym} ${tf}</h2>
+      <div class="muted" id="scanstatus">fetching timeframes + news + macro + context…</div></div>`;
+  }
   const tick=setInterval(()=>{
     const el=document.getElementById('scanstatus'); if(!el) return;
     const s=((Date.now()-t0)/1000).toFixed(0);
@@ -577,9 +591,14 @@ async function systemCheck(){
 
 async function decide(id, decision, note){
   const n=document.getElementById('note-'+id); const noteTxt=(n&&n.value)||'';
-  await fetch('/api/review',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({scan_id:id,decision:decision,note:noteTxt})});
-  load(true); closeModal();
+  try{
+    await fetch('/api/review',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({scan_id:id,decision:decision,note:noteTxt})});
+  }catch(e){}
+  closeModal();
+  // quiet refresh — no 'Scanning…' restart feel; just updates in place
+  await load(true, true);
+  loadPending(); loadHistory(); loadLearning();
 }
 
 async function openModal(id){
@@ -623,7 +642,7 @@ async function coach(){
 }
 
 load(true);
-setInterval(()=>{ if(document.getElementById('auto').checked) load(); }, 30000);
+setInterval(()=>{ if(document.getElementById('auto').checked) load(false, true); }, 30000);
 </script></body></html>
 """
 
@@ -696,12 +715,17 @@ def make_app() -> Flask:
     @app.get("/api/learning")
     def api_learning():
         from data.database import SignalDB
-        with SignalDB() as db:
-            return jsonify({
-                "backtest": db.backtest_stats(),
-                "calibration": db.load_calibration(),
-                "plan_stats": db.plan_stats(),
-            })
+        try:
+            with SignalDB() as db:
+                return jsonify({
+                    "backtest": db.backtest_stats(),
+                    "calibration": db.load_calibration(),
+                    "plan_stats": db.plan_stats(),
+                })
+        except Exception as exc:  # never 500 — the card degrades gracefully
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}",
+                            "backtest": {"overall": {"n": 0}},
+                            "calibration": {}, "plan_stats": []})
 
     @app.get("/api/coach")
     def api_coach():

@@ -1,0 +1,845 @@
+{
+ "analyzed_at": 0,
+ "context": {
+  "collected_at": "2026-08-04T12:05:23.307801+00:00",
+  "cycle": {
+   "available": true,
+   "days_since_halving": 836,
+   "next_halving": "2028-04-20",
+   "note": "Halving cycles historically mark multi-year expansion after the event; the phase is a macro filter, not a timing signal.",
+   "phase": "late-cycle",
+   "position_vs_200d": "around-200d"
+  },
+  "dominance": {
+   "available": true,
+   "btc_dominance": 56.46,
+   "eth_dominance": 9.95,
+   "market_cap_change_24h_pct": 1.47,
+   "total_market_cap_usd": 2268834525483.9683
+  },
+  "equities": {
+   "available": false
+  },
+  "fear_greed": {
+   "available": true,
+   "label": "Extreme Fear",
+   "value": 25
+  },
+  "geopolitics": {
+   "available": true,
+   "count": 0,
+   "elevated": false,
+   "hits": []
+  },
+  "macro": {
+   "available": true,
+   "events": [
+    {
+     "date": "2026-08-07",
+     "days_until": 3,
+     "high_impact": true,
+     "name": "US Non-Farm Payrolls"
+    },
+    {
+     "date": "2026-08-13",
+     "days_until": 9,
+     "high_impact": true,
+     "name": "US CPI"
+    },
+    {
+     "date": "2026-09-04",
+     "days_until": 31,
+     "high_impact": true,
+     "name": "US Non-Farm Payrolls"
+    },
+    {
+     "date": "2026-09-13",
+     "days_until": 40,
+     "high_impact": true,
+     "name": "US CPI"
+    },
+    {
+     "date": "2026-09-16",
+     "days_until": 43,
+     "high_impact": true,
+     "name": "FOMC meeting"
+    }
+   ],
+   "high_impact_imminent": false,
+   "imminent": []
+  },
+  "news": {
+   "count": 15,
+   "headlines": [
+    {
+     "link": "<![CDATA[https://cointelegraph.com/news/intesa-sanpaolo-bank-staked-ether-etf-ibit-shares?utm_source=rss_feed&utm_medium=rss&utm_campaign=rss_partner_inbound]]>",
+     "published": "Tue, 04 Aug 2026 11:55:19 +0000",
+     "sentiment": "neutral",
+     "title": "Italy\u2019s biggest bank triples staked Ether ETF holdings while cutting IBIT shares"
+    },
+    {
+     "link": "<![CDATA[https://cointelegraph.com/markets/jim-cramer-sell-bitcoin-quantum-fears-btc-rises?utm_source=rss_feed&utm_medium=rss&utm_campaign=rss_partner_inbound]]>",
+     "published": "Tue, 04 Aug 2026 10:47:39 +0000",
+     "sentiment": "bearish",
+     "title": "Jim Cramer plans to sell his Bitcoin over quantum fears as BTC rises 1.6%"
+    },
+    {
+     "link": "<![CDATA[https://cointelegraph.com/news/former-fbi-supervisor-charged-1m-crypto-theft?utm_source=rss_feed&utm_medium=rss&utm_campaign=rss_partner_inbound]]>",
+     "published": "Tue, 04 Aug 2026 10:30:56 +0000",
+     "sentiment": "neutral",
+     "title": "Former FBI supervisor admits guilt in $1M crypto theft"
+    },
+    {
+     "link": "<![CDATA[https://cointelegraph.com/markets/strategy-strc-stock-above-90-june-recovery?utm_source=rss_feed&utm_medium=rss&utm_campaign=rss_partner_inbound]]>",
+     "published": "Tue, 04 Aug 2026 09:42:36 +0000",
+     "sentiment": "neutral",
+     "title": "Strategy\u2019s STRC retakes $90 after 24% rebound from June closing low"
+    },
+    {
+     "link": "<![CDATA[https://cointelegraph.com/markets/us-yen-intervention-puts-bitcoin-risk-assets-on-notice-for-liquidity-flux?utm_source=rss_feed&utm_medium=rss&utm_campaign=rss_partner_inbound]]>",
+     "published": "Tue, 04 Aug 2026 09:22:00 +0000",
+     "sentiment": "neutral",
+     "title": "US yen intervention puts Bitcoin, risk assets on notice for liquidity flux"
+    },
+    {
+     "link": "<![CDATA[https://cointelegraph.com/news/apple-telegram-app-store-gram-rebounds?utm_source=rss_feed&utm_medium=rss&utm_campaign=rss_partner_inbound]]>",
+     "published": "Tue, 04 Aug 2026 08:03:03 +0000",
+     "sentiment": "neutral",
+     "title": "Apple briefly removes Telegram from App Store, Gram rebounds"
+    },
+    {
+     "link": "<![CDATA[https://cointelegraph.com/news/ny-judge-denies-cftc-motion-enforcement-kalshi?utm_source=rss_feed&utm_medium=rss&utm_campaign=rss_partner_inbound]]>",
+     "published": "Tue, 04 Aug 2026 07:49:22 +0000",
+     "sentiment": "neutral",
+     "title": "NY judge denies CFTC motion to halt enforcement action against Kalshi"
+    },
+    {
+     "link": "<![CDATA[https://cointelegraph.com/news/nigeria-crypto-tax-rules-digital-asset-platforms?utm_source=rss_feed&utm_medium=rss&utm_campaign=rss_partner_inbound]]>",
+     "published": "Tue, 04 Aug 2026 07:25:32 +0000",
+     "sentiment": "neutral",
+     "title": "Nigeria sets crypto tax collection rules for digital asset platforms"
+    }
+   ]
+  },
+  "risk_regime": {
+   "parts": [
+    "Fear&Greed 25 (Extreme Fear)",
+    "BTC dom 56.46%"
+   ],
+   "regime": "neutral",
+   "score": -1
+  },
+  "social": {
+   "available": true,
+   "count": 1,
+   "influencer_mentions": [
+    {
+     "keyword": "etf",
+     "title": "Italy\u2019s biggest bank triples staked Ether ETF holdings while cutting IBIT shares"
+    }
+   ]
+  }
+ },
+ "elapsed_ms": 0,
+ "lifecycle": {
+  "note": "awaiting human approval \u2014 click Approve / Reject",
+  "status": "PENDING_REVIEW"
+ },
+ "market_context": {
+  "futures": false,
+  "note": "futures unreachable from this network"
+ },
+ "memory": {
+  "changes": [],
+  "fresh_styles": [],
+  "reaffirms": 2,
+  "stable_since": 1785845108403,
+  "stand_aside": [],
+  "status": "SAME"
+ },
+ "memory_events": [
+  {
+   "detail": "market state changed (levels/zone moved)",
+   "id": 4,
+   "kind": "UPDATED",
+   "symbol": "BTCUSDT",
+   "timeframe": "15m",
+   "ts": 1785845099623
+  },
+  {
+   "detail": "market state changed (levels/zone moved)",
+   "id": 3,
+   "kind": "UPDATED",
+   "symbol": "BTCUSDT",
+   "timeframe": "15m",
+   "ts": 1785844273188
+  },
+  {
+   "detail": "setup(s) gone: Swing",
+   "id": 2,
+   "kind": "UPDATED",
+   "symbol": "BTCUSDT",
+   "timeframe": "15m",
+   "ts": 1785841947616
+  },
+  {
+   "detail": "first observation of this market state",
+   "id": 1,
+   "kind": "NEW",
+   "symbol": "BTCUSDT",
+   "timeframe": "15m",
+   "ts": 1785837797641
+  }
+ ],
+ "mtf": {
+  "alignment": {
+   "label": "mixed",
+   "score": -23.0
+  },
+  "htf_bias": "bearish",
+  "key_levels": {
+   "resistance": [
+    65409.56,
+    64243.81
+   ],
+   "support": [
+    62275.0,
+    63322.01,
+    63451.8
+   ]
+  },
+  "ltf_bias": "neutral",
+  "pivot": 63856.38,
+  "suggested_bias": "bearish",
+  "symbol": "BTCUSDT",
+  "views": {
+   "15m": {
+    "adx": 18.621603336128913,
+    "atr_pct": 0.1772067220202036,
+    "available": true,
+    "equal_highs": [
+     63893.994999999995,
+     63976.174999999996,
+     64054.45333333333
+    ],
+    "equal_lows": [
+     62566.54,
+     63357.01,
+     63485.11,
+     63660.676666666666,
+     63782.21666666667
+    ],
+    "event_kind": "bos_up",
+    "pd_position": 0.801,
+    "premium_discount": "premium",
+    "price": 63856.38,
+    "rsi": 59.32450690337948,
+    "supertrend_bull": true,
+    "sweep": {
+     "bars_ago": 2,
+     "level": 63816.65,
+     "recovered": true,
+     "side": "sellside"
+    },
+    "swing_high": 63763.63,
+    "swing_low": 63451.8,
+    "tf": "15m",
+    "trend": "bull",
+    "trend_bias": "bullish",
+    "volume_ratio": 0.37115013601793495
+   },
+   "1d": {
+    "adx": 22.23223308363185,
+    "atr_pct": 2.514152440483506,
+    "available": true,
+    "equal_highs": [
+     64696.415,
+     65611.41500000001,
+     79479.24
+    ],
+    "equal_lows": [
+     62273.535
+    ],
+    "event_kind": "bos_up",
+    "pd_position": 0.242,
+    "premium_discount": "discount",
+    "price": 63856.38,
+    "rsi": 49.234492309494605,
+    "supertrend_bull": true,
+    "sweep": {
+     "bars_ago": 0,
+     "level": 63739.75,
+     "recovered": true,
+     "side": "sellside"
+    },
+    "swing_high": 65409.56,
+    "swing_low": 62275.0,
+    "tf": "1d",
+    "trend": "bear",
+    "trend_bias": "bullish",
+    "volume_ratio": 0.4544292108307725
+   },
+   "1h": {
+    "adx": 20.854852262663027,
+    "atr_pct": 0.420681756950542,
+    "available": true,
+    "equal_highs": [
+     63139.97333333333,
+     63622.005000000005,
+     64002.35
+    ],
+    "equal_lows": [
+     62287.5,
+     62455.630000000005,
+     62987.170000000006,
+     63479.29,
+     64638.11
+    ],
+    "event_kind": "bos_up",
+    "pd_position": 0.504,
+    "premium_discount": "equilibrium",
+    "price": 63856.38,
+    "rsi": 56.82416013999608,
+    "supertrend_bull": true,
+    "sweep": {
+     "bars_ago": 2,
+     "level": 63624.15,
+     "recovered": true,
+     "side": "sellside"
+    },
+    "swing_high": 64243.81,
+    "swing_low": 63451.8,
+    "tf": "1h",
+    "trend": "mixed",
+    "trend_bias": "bullish",
+    "volume_ratio": 0.09945612952186714
+   },
+   "4h": {
+    "adx": 16.87445031500144,
+    "atr_pct": 0.8749051129888098,
+    "available": true,
+    "equal_highs": [
+     65142.295,
+     65784.06333333334
+    ],
+    "equal_lows": [
+     62287.5,
+     62501.78,
+     63079.695,
+     63294.675,
+     63774.875
+    ],
+    "event_kind": "choch_down",
+    "pd_position": 0.338,
+    "premium_discount": "discount",
+    "price": 63856.38,
+    "rsi": 54.410203102556636,
+    "supertrend_bull": false,
+    "sweep": {
+     "bars_ago": 1,
+     "level": 63810.0,
+     "recovered": true,
+     "side": "sellside"
+    },
+    "swing_high": 64243.81,
+    "swing_low": 63322.01,
+    "tf": "4h",
+    "trend": "mixed",
+    "trend_bias": "bearish",
+    "volume_ratio": 0.027672785313163768
+   },
+   "5m": {
+    "adx": 37.77822623040505,
+    "atr_pct": 0.09810211139739786,
+    "available": true,
+    "equal_highs": [
+     63601.587499999994,
+     63759.815,
+     63855.642857142855,
+     63961.0
+    ],
+    "equal_lows": [
+     63485.0025,
+     63564.99,
+     63680.26499999999,
+     63782.30333333334
+    ],
+    "event_kind": "choch_up",
+    "pd_position": 0.511,
+    "premium_discount": "equilibrium",
+    "price": 63856.38,
+    "rsi": 61.9654846603876,
+    "supertrend_bull": true,
+    "sweep": {
+     "bars_ago": 5,
+     "level": 63840.36,
+     "recovered": true,
+     "side": "sellside"
+    },
+    "swing_high": 63950.0,
+    "swing_low": 63720.0,
+    "tf": "5m",
+    "trend": "mixed",
+    "trend_bias": "bullish",
+    "volume_ratio": 0.13670795176118453
+   }
+  }
+ },
+ "plans": [
+  {
+   "action": "BUY",
+   "condition": "IF sellside liquidity was swept at 63816.65 AND price shows bullish CHOCH / rejection",
+   "confidence": 72,
+   "confidence_label": "MEDIUM",
+   "entry": 63856.38,
+   "id": "reversal_buy",
+   "reasons": [
+    "Bullish trend alignment (EMA stack + Supertrend)",
+    "Bullish structure (bos_up)",
+    "Sell-side liquidity swept (stop hunt) + buyside targets above",
+    "Momentum aligned (RSI>50, MACD histogram rising)",
+    "Sellside stop hunt detected"
+   ],
+   "risk_reward": 2.5,
+   "status": "active",
+   "stop_loss": 63664.81,
+   "take_profits": [
+    64239.52,
+    64431.09
+   ],
+   "trigger_level": 63816.65,
+   "type": "Sweep Reversal Buy"
+  },
+  {
+   "action": "BUY",
+   "condition": "IF price pulls back to unfilled bullish FVG near 63,667.34 AND shows rejection (bullish candle)",
+   "confidence": 70,
+   "confidence_label": "MEDIUM",
+   "entry": 63667.34,
+   "id": "buy_pullback",
+   "reasons": [
+    "Bullish trend alignment (EMA stack + Supertrend)",
+    "Bullish structure (bos_up)",
+    "Sell-side liquidity swept (stop hunt) + buyside targets above",
+    "Momentum aligned (RSI>50, MACD histogram rising)",
+    "Pullback target = unfilled bullish FVG"
+   ],
+   "risk_reward": 3.88,
+   "status": "waiting",
+   "stop_loss": 63476.34,
+   "take_profits": [
+    64049.34,
+    64768.48
+   ],
+   "trigger_level": 63667.34,
+   "type": "Buy Pullback"
+  },
+  {
+   "action": "BUY",
+   "condition": "IF price retraces into unfilled bullish FVG at 63,667.34 and holds",
+   "confidence": 67,
+   "confidence_label": "MEDIUM",
+   "entry": 63667.34,
+   "id": "fvg_retest_buy",
+   "reasons": [
+    "Bullish trend alignment (EMA stack + Supertrend)",
+    "Bullish structure (bos_up)",
+    "Sell-side liquidity swept (stop hunt) + buyside targets above",
+    "Momentum aligned (RSI>50, MACD histogram rising)",
+    "Unfilled bullish fair value gap"
+   ],
+   "risk_reward": 3.68,
+   "status": "waiting",
+   "stop_loss": 63476.34,
+   "take_profits": [
+    64049.34,
+    64692.47
+   ],
+   "trigger_level": 63667.34,
+   "type": "FVG Retest Buy"
+  },
+  {
+   "action": "BUY",
+   "condition": "Enter now \u2014 62% confluence at 63,856.38",
+   "confidence": 62,
+   "confidence_label": "MEDIUM",
+   "entry": 63856.38,
+   "id": "imm_buy",
+   "reasons": [
+    "Bullish trend alignment (EMA stack + Supertrend)",
+    "Bullish structure (bos_up)",
+    "Sell-side liquidity swept (stop hunt) + buyside targets above",
+    "Momentum aligned (RSI>50, MACD histogram rising)"
+   ],
+   "risk_reward": 2.5,
+   "status": "active",
+   "stop_loss": 63664.81,
+   "take_profits": [
+    64239.52,
+    64431.09
+   ],
+   "trigger_level": null,
+   "type": "Immediate Buy"
+  }
+ ],
+ "scan_id": 15,
+ "signal": {
+  "action": "BUY",
+  "asset": "BTCUSDT",
+  "confidence": "MEDIUM",
+  "entry": 63856.38,
+  "note": "Risk advice only \u2014 not financial advice. Use stop-losses.",
+  "reason": "price above VWAP + BOS UP + Bullish trend alignment (EMA stack + Supertrend) + Bullish structure (bos_up) + Sell-side liquidity swept (stop hunt) + buyside targets above + Momentum aligned (RSI>50, MACD histogram rising)",
+  "risk_reward": 2.5,
+  "signal_id": "BTCUSDT_20260804_0000",
+  "signal_type": "SIGNAL",
+  "stop_loss": 63664.81,
+  "take_profit": 64239.52,
+  "timeframe": "15m",
+  "timestamp": 1785845123261
+ },
+ "snapshot": {
+  "features": {
+   "above_vwap": true,
+   "adx": 18.6,
+   "adx_strong": false,
+   "atr": 113.16,
+   "atr_pct": 0.177,
+   "bar_ts": 1785844800000,
+   "bb_compress": false,
+   "bb_width_pct": 0.77,
+   "close_vs_vwap_pct": 0.22,
+   "delta": -69.62,
+   "ema_alignment_bear": false,
+   "ema_alignment_bull": true,
+   "equal_highs": [
+    63893.994999999995,
+    63976.174999999996,
+    64054.45333333333
+   ],
+   "equal_lows": [
+    62566.54,
+    63357.01,
+    63485.11,
+    63660.676666666666,
+    63782.21666666667
+   ],
+   "event_age": 329,
+   "event_kind": "bos_up",
+   "fvg_bear_count": 1,
+   "fvg_bull_count": 4,
+   "liquidity_above": [
+    64243.81,
+    64080.0,
+    64059.75,
+    64023.61,
+    64000.0,
+    63992.71
+   ],
+   "liquidity_below": [
+    63816.65,
+    63768.0,
+    63762.0,
+    63686.44,
+    63649.0,
+    63646.59
+   ],
+   "macd_bear_cross": false,
+   "macd_bull_cross": false,
+   "macd_hist": 37.9452,
+   "macd_hist_rising": false,
+   "minus_di": 15.3,
+   "nearest_bear_fvg": 64029.0,
+   "nearest_bear_ob": null,
+   "nearest_bull_fvg": 63667.34,
+   "nearest_bull_ob": null,
+   "obv_slope": 334.4,
+   "plus_di": 27.5,
+   "poc": null,
+   "premium_discount": "premium",
+   "premium_discount_position": 0.801,
+   "price": 63856.38,
+   "roc": 0.44,
+   "rsi": 59.3,
+   "rsi_bullish": true,
+   "rsi_divergence": {
+    "bear": 0,
+    "bear_price_high": null,
+    "bull": 0,
+    "bull_price_low": null
+   },
+   "rsi_overbought": false,
+   "rsi_oversold": false,
+   "rsi_prev": 64.8,
+   "stoch_k": 90.7,
+   "supertrend_bull": true,
+   "sweep": {
+    "bars_ago": 2,
+    "level": 63816.65,
+    "recovered": true,
+    "side": "sellside"
+   },
+   "swing_high": 63763.63,
+   "swing_low": 63451.8,
+   "symbol": "BTCUSDT",
+   "timeframe": "15m",
+   "trend": "bullish",
+   "trend_bias": "bullish",
+   "volume_above_avg": false,
+   "volume_ratio": 0.37,
+   "volume_spike": false,
+   "vwap": 63713.2,
+   "wt1": 16.54,
+   "wt2": 6.84,
+   "wt_bull": true,
+   "wt_overbought": false,
+   "wt_oversold": false
+  },
+  "scores": {
+   "bear": {
+    "conditions": {
+     "Liquidity": 5,
+     "Location": 5,
+     "Market structure": 0,
+     "Momentum": 0,
+     "OB/FVG": 5,
+     "RSI divergence": 0,
+     "Trend": 0,
+     "Volume": 0
+    },
+    "confidence": "NO TRADE",
+    "confidence_pct": 15,
+    "max_score": 100,
+    "reasons": [],
+    "score": 15
+   },
+   "bull": {
+    "conditions": {
+     "Liquidity": 15,
+     "Location": 0,
+     "Market structure": 15,
+     "Momentum": 6,
+     "OB/FVG": 10,
+     "RSI divergence": 0,
+     "Trend": 12,
+     "Volume": 4
+    },
+    "confidence": "MEDIUM",
+    "confidence_pct": 62,
+    "max_score": 100,
+    "reasons": [
+     "Bullish trend alignment (EMA stack + Supertrend)",
+     "Bullish structure (bos_up)",
+     "Sell-side liquidity swept (stop hunt) + buyside targets above",
+     "Momentum aligned (RSI>50, MACD histogram rising)"
+    ],
+    "score": 62
+   }
+  },
+  "structure": {
+   "equal_highs": [
+    63893.994999999995,
+    63976.174999999996,
+    64054.45333333333
+   ],
+   "equal_lows": [
+    62566.54,
+    63357.01,
+    63485.11,
+    63660.676666666666,
+    63782.21666666667
+   ],
+   "fvgs": [
+    {
+     "bottom": 63670.0,
+     "filled": true,
+     "side": "bearish",
+     "top": 63693.77
+    },
+    {
+     "bottom": 63651.01,
+     "filled": true,
+     "side": "bearish",
+     "top": 63654.16
+    },
+    {
+     "bottom": 63651.01,
+     "filled": true,
+     "side": "bullish",
+     "top": 63659.99
+    },
+    {
+     "bottom": 63626.11,
+     "filled": true,
+     "side": "bearish",
+     "top": 63630.0
+    },
+    {
+     "bottom": 63570.0,
+     "filled": false,
+     "side": "bullish",
+     "top": 63652.12
+    },
+    {
+     "bottom": 63667.34,
+     "filled": false,
+     "side": "bullish",
+     "top": 63718.3
+    }
+   ],
+   "last_event": {
+    "index": 170,
+    "kind": "bos_up",
+    "price": 64243.81
+   },
+   "last_swing_high": 63763.63,
+   "last_swing_low": 63451.8,
+   "liquidity_above": [
+    64243.81,
+    64080.0,
+    64059.75,
+    64023.61,
+    64000.0,
+    63992.71
+   ],
+   "liquidity_below": [
+    63816.65,
+    63768.0,
+    63762.0,
+    63686.44,
+    63649.0,
+    63646.59
+   ],
+   "order_blocks": [
+    {
+     "bottom": 63772.01,
+     "broken": true,
+     "side": "bullish",
+     "tested": true,
+     "top": 63808.79
+    },
+    {
+     "bottom": 63836.03,
+     "broken": true,
+     "side": "bullish",
+     "tested": true,
+     "top": 63837.79
+    }
+   ],
+   "premium_discount": {
+    "bottom": 62300.0,
+    "position": 0.801,
+    "top": 64243.81,
+    "zone": "premium"
+   },
+   "sweep": {
+    "bars_ago": 2,
+    "level": 63816.65,
+    "recovered": true,
+    "side": "sellside"
+   },
+   "trend_bias": "bullish"
+  }
+ },
+ "styles": {
+  "market_offering": [
+   "Day"
+  ],
+  "stand_aside": [],
+  "styles": {
+   "Day": {
+    "available": true,
+    "confidence": 78,
+    "confidence_label": "MEDIUM",
+    "cooldown_min": 60,
+    "direction": "SELL",
+    "entry": 63667.34,
+    "horizon": "1 session (hours)",
+    "plan_id": "buy_pullback",
+    "reason": "HTF bias bearish aligned with LTF neutral after bos_up \u2014 classic day-trade confluence",
+    "risk_reward": 3.88,
+    "since_ts": null,
+    "status": "active",
+    "stop_loss": 63476.34,
+    "style": "Day",
+    "take_profits": [
+     64049.34,
+     64768.48
+    ]
+   },
+   "Momentum": {
+    "available": false,
+    "confidence": 0,
+    "confidence_label": "LOW",
+    "cooldown_min": 60,
+    "direction": null,
+    "entry": null,
+    "horizon": "",
+    "plan_id": null,
+    "reason": "",
+    "risk_reward": 0.0,
+    "since_ts": null,
+    "status": "none",
+    "stop_loss": null,
+    "style": "Momentum",
+    "take_profits": []
+   },
+   "Position": {
+    "available": false,
+    "confidence": 0,
+    "confidence_label": "LOW",
+    "cooldown_min": 1440,
+    "direction": null,
+    "entry": null,
+    "horizon": "",
+    "plan_id": null,
+    "reason": "",
+    "risk_reward": 0.0,
+    "since_ts": null,
+    "status": "none",
+    "stop_loss": null,
+    "style": "Position",
+    "take_profits": []
+   },
+   "Scalp": {
+    "available": false,
+    "confidence": 0,
+    "confidence_label": "LOW",
+    "cooldown_min": 15,
+    "direction": null,
+    "entry": null,
+    "horizon": "",
+    "plan_id": null,
+    "reason": "",
+    "risk_reward": 0.0,
+    "since_ts": null,
+    "status": "none",
+    "stop_loss": null,
+    "style": "Scalp",
+    "take_profits": []
+   },
+   "Swing": {
+    "available": false,
+    "confidence": 0,
+    "confidence_label": "LOW",
+    "cooldown_min": 240,
+    "direction": null,
+    "entry": null,
+    "horizon": "",
+    "plan_id": null,
+    "reason": "",
+    "risk_reward": 0.0,
+    "since_ts": null,
+    "status": "none",
+    "stop_loss": null,
+    "style": "Swing",
+    "take_profits": []
+   }
+  }
+ },
+ "validation": {
+  "errors": [],
+  "ok": true,
+  "warnings": []
+ }
+}
