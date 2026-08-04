@@ -103,11 +103,12 @@ async function load(){
       'updated ' + new Date().toLocaleTimeString();
   }catch(e){ document.getElementById('app').innerHTML='<div class="err">Error: '+e+'</div>'; }
 }
-const fmt=(v,n=2)=> v==null?'—':Number(v).toLocaleString(undefined,{minimumFractionDigits:n,maximumFractionDigits:n});
+  const fmt=(v,n=2)=> v==null?'—':Number(v).toLocaleString(undefined,{minimumFractionDigits:n,maximumFractionDigits:n});
 const cls=a=> a==='BUY'?'BUY':a==='SELL'?'SELL':'NOTRADE';
 function render(d){
   const s=d.signal||{}, plans=d.plans||[], snap=d.snapshot||{};
   const f=snap.features||{}, sc=snap.scores||{}, ctx=d.market_context||{};
+  const lc=d.lifecycle||{};
   const cf=sc.bull?.score??0, cs=sc.bear?.score??0;
   let html='';
   html+=`<div class="card" style="grid-column:1/-1">
@@ -115,7 +116,8 @@ function render(d){
       <b>${s.asset} · ${s.timeframe}</b>
       <span class="badge">${s.signal_id||''}</span>
       <span class="badge">${s.confidence}</span>
-      ${s.risk_reward?`<span class="badge">RR ${s.risk_reward}</span>`:''}</div>
+      ${s.risk_reward?`<span class="badge">RR ${s.risk_reward}</span>`:''}
+      ${lc.status?`<span class="badge" style="background:${lc.status==='APPROVED'?'var(--green)':lc.status==='REJECTED'?'var(--red)':'var(--amber)'}22;border-color:${lc.status==='APPROVED'?'var(--green)':lc.status==='REJECTED'?'var(--red)':'var(--amber)'};color:var(--txt)">${lc.status}</span>`:''}</div>
     <div class="kv" style="margin-bottom:10px">
       <b>Entry</b><span class="mono">${fmt(s.entry)}</span>
       <b>Stop loss</b><span class="mono">${fmt(s.stop_loss)}</span>
@@ -127,6 +129,7 @@ function render(d){
       <b>Open interest</b><span>${ctx.open_interest!=null?fmt(ctx.open_interest,0):'n/a'}</span>
       <b>L/S ratio</b><span>${ctx.long_short_ratio??'n/a'}</span>
       <b>24h change</b><span>${ctx.liq_24h_change_pct!=null?ctx.liq_24h_change_pct+'%':'n/a'}</span>
+      <b>Lifecycle</b><span>${lc.note||(lc.status||'—')}</span>
     </div></div>`;
 
   html+=`<div class="card"><h2>Conditional plans (${plans.length})</h2>`;
@@ -165,13 +168,48 @@ function render(d){
   html+=`<tr><td><b>Total</b></td><td><b>${cf}</b></td><td><b>${cs}</b></td></tr></table>
     <div class="muted" style="margin-top:8px">${(sc.bull?.reasons||[]).concat(sc.bear?.reasons||[]).slice(0,6).map(r=>'• '+r).join('<br>')}</div></div>`;
 
+  html+=`<div class="card" style="grid-column:1/-1"><h2>Human approval queue</h2>
+    <div id="queue">loading…</div></div>`;
+
+  html+=`<div class="card" style="grid-column:1/-1"><h2>🧑‍🏫 Coach — learn from this market</h2>
+    <button class="rowbtn" onclick="coach()">Explain & mentor me</button>
+    <div id="coach" class="muted" style="white-space:pre-wrap;margin-top:10px"></div></div>`;
+
   html+=`<div class="card" style="grid-column:1/-1"><h2>LLM / narrative & raw JSON</h2>
     <div id="llm" class="muted" style="white-space:pre-wrap">${(d.llm?.narrative||'').replace(/</g,'&lt;')||'Enable LLM_PROVIDER in .env for an AI narrative, or use the rule-based output.'}</div>
     <details style="margin-top:10px"><summary>show raw JSON</summary>
     <pre style="max-height:420px;overflow:auto;font-size:11px">${JSON.stringify(d,null,2).replace(/</g,'&lt;')}</pre></details></div>`;
   document.getElementById('app').innerHTML=`<div class="grid">${html}</div>`;
 }
-load(); setInterval(load, 45000);
+async function loadPending(){
+  try{
+    const r=await fetch('/api/pending'); const d=await r.json();
+    const q=d.pending||[]; const el=document.getElementById('queue'); if(!el) return;
+    if(!q.length){ el.innerHTML='<span class="muted">No signals awaiting approval — you\'re all caught up 🎉</span>'; return; }
+    el.innerHTML=q.map(x=>`<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;border-bottom:1px solid var(--line);padding:6px 0;flex-wrap:wrap">
+      <span>#${x.id} <b>${x.symbol}</b> ${x.timeframe} <span class="${cls(x.action)}">${x.action}</span> conf=${x.confidence_label} @ ${fmt(x.entry)}</span>
+      <span>
+        <button class="rowbtn" style="background:var(--green)" onclick="decide(${x.id},'APPROVED')">✓ Approve</button>
+        <button class="rowbtn" style="background:var(--red)" onclick="decide(${x.id},'REJECTED')">✗ Reject</button>
+      </span></div>`).join('');
+  }catch(e){ const el=document.getElementById('queue'); if(el) el.innerHTML='<span class="err">'+e+'</span>'; }
+}
+async function decide(id,decision){
+  await fetch('/api/review',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({scan_id:id,decision:decision})});
+  loadPending(); load();
+}
+async function coach(){
+  const el=document.getElementById('coach'); if(!el) return;
+  el.textContent='thinking…';
+  const sym=document.getElementById('sym').value.trim().toUpperCase()||'BTCUSDT';
+  const tf=document.getElementById('tf').value;
+  try{
+    const r=await fetch(`/api/coach?symbol=${sym}&tf=${tf}`); const d=await r.json();
+    el.textContent=(d.explain||[]).join('\n')+'\n\n'+d.mentor+'\n\n📈 FEEDBACK\n'+(d.feedback||[]).join('\n');
+  }catch(e){ el.textContent='Error: '+e; }
+}
+load(); loadPending(); setInterval(()=>{load(); loadPending();}, 45000);
 </script></body></html>
 """
 
@@ -188,11 +226,55 @@ def make_app() -> Flask:
         symbol = request.args.get("symbol", SYMBOL).upper()
         tf = request.args.get("tf", TIMEFRAME)
         try:
-            return jsonify(build_payload(symbol, tf))
+            payload = build_payload(symbol, tf)
+            return jsonify(payload)
         except ConnectionError as exc:
             return jsonify({"error": str(exc)}), 502
         except Exception as exc:  # pragma: no cover
             return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+    @app.get("/api/pending")
+    def api_pending():
+        from data.database import SignalDB
+        with SignalDB() as db:
+            return jsonify({"pending": db.pending_reviews()})
+
+    @app.post("/api/review")
+    def api_review():
+        body = request.get_json(silent=True) or {}
+        scan_id = body.get("scan_id")
+        decision = (body.get("decision") or "").upper()
+        note = body.get("note", "")
+        if decision not in ("APPROVED", "REJECTED", "EXECUTED", "CLOSED", "SKIPPED"):
+            return jsonify({"error": f"bad decision {decision}"}), 400
+        from data.database import SignalDB
+        from engine.lifecycle import LifecycleError
+        with SignalDB() as db:
+            try:
+                new = db.update_status(int(scan_id), decision, note=note,
+                                       reviewer="dashboard")
+            except (LifecycleError, TypeError, ValueError) as exc:
+                return jsonify({"error": str(exc)}), 400
+            if new is None:
+                return jsonify({"error": f"scan #{scan_id} not found"}), 404
+        return jsonify({"ok": True, "scan_id": scan_id, "status": new})
+
+    @app.get("/api/coach")
+    def api_coach():
+        symbol = request.args.get("symbol", SYMBOL).upper()
+        tf = request.args.get("tf", TIMEFRAME)
+        from brain.coach import explain_signal, mentor
+        from data.database import SignalDB
+        from main import run_scan as _run_scan
+        payload = _run_scan(symbol, tf, bars=BARS, save_db=False)
+        with SignalDB() as db:
+            from brain.coach import personal_feedback
+            feedback = personal_feedback(db)
+        return jsonify({
+            "explain": explain_signal(payload),
+            "mentor": mentor(payload),
+            "feedback": feedback,
+        })
 
     @app.get("/api/health")
     def health():

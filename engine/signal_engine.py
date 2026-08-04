@@ -134,8 +134,14 @@ def build_best_signal(features: dict, bull: ScoreBreakdown, bear: ScoreBreakdown
 
 
 def analyze_frame(df: pd.DataFrame, symbol: str = "BTCUSDT", timeframe: str = "15m",
-                  min_confidence: int = 55, default_rr: float = 2.0) -> BrainOutput:
-    """Run the full brain on one OHLCV frame."""
+                  min_confidence: int = 55, default_rr: float = 2.0,
+                  calibration: dict | None = None) -> BrainOutput:
+    """Run the full brain on one OHLCV frame.
+
+    `calibration` is the optional self-improvement profile (plan_type ->
+    multiplier / filtered) produced by brain.calibrator; None keeps behaviour
+    identical to an uncalibrated engine.
+    """
     df = df.copy()
     df.attrs["symbol"] = symbol
     df.attrs["timeframe"] = timeframe
@@ -152,7 +158,8 @@ def analyze_frame(df: pd.DataFrame, symbol: str = "BTCUSDT", timeframe: str = "1
         bull, bear = neutral, neutral
 
     plans = build_plans(features, bull, bear,
-                        min_confidence=min_confidence, default_rr=default_rr)
+                        min_confidence=min_confidence, default_rr=default_rr,
+                        calibration=calibration)
     best = build_best_signal(features, bull, bear, plans, symbol, timeframe,
                              min_confidence)
 

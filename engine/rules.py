@@ -77,7 +77,7 @@ def _sl_buffer(price: float, atr: float, side: str, min_pct: float = 0.3) -> flo
 
 def build_plans(f: dict, bull: ScoreBreakdown, bear: ScoreBreakdown,
                 min_confidence: int = 55, default_rr: float = 2.0,
-                max_plans: int = 8) -> list[Plan]:
+                max_plans: int = 8, calibration: dict | None = None) -> list[Plan]:
     price = f["price"]
     atr = f.get("atr") or price * 0.003
     plans: list[Plan] = []
@@ -250,6 +250,22 @@ def build_plans(f: dict, bull: ScoreBreakdown, bear: ScoreBreakdown,
             reasons=bear.fired + ["Unfilled bearish fair value gap"],
             status="waiting",
         ))
+
+    # Apply the calibration profile (self-improvement) before filtering:
+    # boost positive-expectancy plan types, dampen negative ones, drop filtered.
+    if calibration:
+        from .calibration_hook import apply_calibration
+        kept: list[Plan] = []
+        for p in plans:
+            conf, filtered = apply_calibration(p.confidence_pct, p.type, calibration)
+            if filtered:
+                continue
+            if conf != p.confidence_pct:
+                label, _ = _mapped_confidence(conf)
+                p.confidence_pct = conf
+                p.confidence_label = label
+            kept.append(p)
+        plans = kept
 
     # Filter to the trade threshold, sort by confidence, cap the count.
     plans = [p for p in plans if p.confidence_pct >= min_confidence]

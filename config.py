@@ -61,3 +61,11 @@ DB_PATH = os.getenv("DB_PATH", str(ROOT / "data" / "cryptobrain.db"))
 BACKTEST_HORIZONS = [float(h) for h in os.getenv("BACKTEST_HORIZONS", "1,4,24").split(",")]
 BACKTEST_MIN_BARS = int(os.getenv("BACKTEST_MIN_BARS", "120"))
 BACKTEST_STEP = int(os.getenv("BACKTEST_STEP", "1"))
+
+# ── Calibration (self-improvement) ───────────────────────────────────────
+CALIBRATE_MIN_N = int(os.getenv("CALIBRATE_MIN_N", "20"))     # min samples to trust a plan type
+CALIBRATE_GAIN = float(os.getenv("CALIBRATE_GAIN", "0.25"))   # expectancy -> multiplier sensitivity
+CALIBRATE_MAX_MULT = float(os.getenv("CALIBRATE_MAX_MULT", "1.25"))
+CALIBRATE_MIN_MULT = float(os.getenv("CALIBRATE_MIN_MULT", "0.6"))
+CALIBRATE_FILTER = os.getenv("CALIBRATE_FILTER", "false").lower() in ("1", "true", "yes")
+CALIBRATE_FILTER_THRESHOLD = float(os.getenv("CALIBRATE_FILTER_THRESHOLD", "-0.35"))  # R, negative

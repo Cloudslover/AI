@@ -53,9 +53,24 @@ CREATE TABLE IF NOT EXISTS backtest_results(
   rr_achieved REAL, max_favorable REAL, max_adverse REAL,
   entry REAL, trigger_level REAL
 );
+CREATE TABLE IF NOT EXISTS decisions(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scan_id INTEGER NOT NULL,
+  from_state TEXT, to_state TEXT,
+  reviewer TEXT DEFAULT 'human',
+  note TEXT,
+  ts INTEGER,
+  FOREIGN KEY(scan_id) REFERENCES scans(id)
+);
+CREATE TABLE IF NOT EXISTS calibration(
+  plan_type TEXT PRIMARY KEY,
+  multiplier REAL, expectancy REAL, samples INTEGER,
+  updated_at INTEGER
+);
 CREATE INDEX IF NOT EXISTS idx_plans_scan ON plans(scan_id);
 CREATE INDEX IF NOT EXISTS idx_bt_type ON backtest_results(plan_type);
 CREATE INDEX IF NOT EXISTS idx_bt_outcome ON backtest_results(outcome);
+CREATE INDEX IF NOT EXISTS idx_decisions_scan ON decisions(scan_id);
 """
 
 
@@ -66,10 +81,86 @@ class SignalDB:
         self.conn = sqlite3.connect(str(self.path))
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.conn.commit()
 
     def close(self) -> None:
         self.conn.close()
+
+    # ── migration ────────────────────────────────────────────────────────
+    def _migrate(self) -> None:
+        """Add lifecycle columns to pre-existing DBs (idempotent)."""
+        cols = {r["name"] for r in self.conn.execute("PRAGMA table_info(scans)")}
+        if "status" not in cols:
+            self.conn.execute("ALTER TABLE scans ADD COLUMN status TEXT DEFAULT 'PENDING_REVIEW'")
+        if "lifecycle_ts" not in cols:
+            self.conn.execute("ALTER TABLE scans ADD COLUMN lifecycle_ts INTEGER")
+        if "approve_note" not in cols:
+            self.conn.execute("ALTER TABLE scans ADD COLUMN approve_note TEXT")
+
+    # ── lifecycle ────────────────────────────────────────────────────────
+    def update_status(self, scan_id: int, to_state: str, note: str = "",
+                      reviewer: str = "human") -> Optional[str]:
+        """Transition a scan's lifecycle state and log a decision row.
+        Returns the new state, or None if the scan doesn't exist."""
+        row = self.conn.execute("SELECT status FROM scans WHERE id=?", (scan_id,)).fetchone()
+        if row is None:
+            return None
+        from engine.lifecycle import transition, LifecycleError
+        try:
+            new_state = transition(row["status"], to_state)
+        except LifecycleError as exc:
+            raise LifecycleError(exc.message) from None
+        self.conn.execute(
+            "UPDATE scans SET status=?, lifecycle_ts=? WHERE id=?",
+            (new_state, int(time.time() * 1000), scan_id))
+        self.conn.execute(
+            "INSERT INTO decisions(scan_id, from_state, to_state, reviewer, note, ts) "
+            "VALUES (?,?,?,?,?,?)",
+            (scan_id, row["status"], new_state, reviewer, note, int(time.time() * 1000)))
+        self.conn.commit()
+        return new_state
+
+    def pending_reviews(self, symbol: str | None = None) -> list[dict]:
+        """Signals awaiting human approval, newest first."""
+        q = ("SELECT s.*, (SELECT COUNT(*) FROM plans p WHERE p.scan_id=s.id) n_plans "
+             "FROM scans s WHERE s.status='PENDING_REVIEW' AND s.action IN ('BUY','SELL')")
+        args: tuple = ()
+        if symbol:
+            q += " AND s.symbol=?"
+            args = (symbol,)
+        q += " ORDER BY s.ts DESC LIMIT 30"
+        return [dict(r) for r in self.conn.execute(q, args).fetchall()]
+
+    def decision_history(self, scan_id: int) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT from_state, to_state, reviewer, note, ts FROM decisions "
+            "WHERE scan_id=? ORDER BY ts", (scan_id,)).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_scan(self, scan_id: int) -> Optional[dict]:
+        row = self.conn.execute("SELECT * FROM scans WHERE id=?", (scan_id,)).fetchone()
+        return dict(row) if row else None
+
+    # ── calibration (self-improvement profile) ───────────────────────────
+    def save_calibration(self, profile: dict) -> None:
+        now = int(time.time() * 1000)
+        for plan_type, entry in profile.items():
+            self.conn.execute(
+                """INSERT INTO calibration(plan_type, multiplier, expectancy, samples, updated_at)
+                   VALUES (?,?,?,?,?)
+                   ON CONFLICT(plan_type) DO UPDATE SET
+                     multiplier=excluded.multiplier, expectancy=excluded.expectancy,
+                     samples=excluded.samples, updated_at=excluded.updated_at""",
+                (plan_type, entry.get("multiplier", 1.0),
+                 entry.get("expectancy"), entry.get("samples", 0), now))
+        self.conn.commit()
+
+    def load_calibration(self) -> dict:
+        rows = self.conn.execute("SELECT * FROM calibration").fetchall()
+        return {r["plan_type"]: {"multiplier": r["multiplier"],
+                                 "expectancy": r["expectancy"],
+                                 "samples": r["samples"]} for r in rows}
 
     # ── scans ────────────────────────────────────────────────────────────
     def save_scan(self, payload: dict) -> int:
@@ -78,12 +169,14 @@ class SignalDB:
         snap = payload.get("snapshot", {})
         features = snap.get("features", {})
         plans = payload.get("plans", [])
+        from engine.lifecycle import reviewable
+        status = "PENDING_REVIEW" if reviewable(sig) else "CREATED"
         cur = self.conn.execute(
             """INSERT INTO scans
                (ts, symbol, timeframe, price, action, entry, stop_loss, take_profit,
                 risk_reward, confidence_label, confidence_pct, reason, signal_type,
-                features_json, plans_json, context_json)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                features_json, plans_json, context_json, status, lifecycle_ts)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 sig.get("timestamp") or int(time.time() * 1000),
                 sig.get("asset", ""),
@@ -101,6 +194,8 @@ class SignalDB:
                 json.dumps(features, default=str),
                 json.dumps(plans, default=str),
                 json.dumps(payload.get("market_context", {}), default=str),
+                status,
+                int(time.time() * 1000),
             ),
         )
         scan_id = cur.lastrowid

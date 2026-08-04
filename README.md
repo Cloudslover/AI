@@ -36,8 +36,11 @@ with connectors for your **private CryptoDada website** and **Discord group**.
 | **Notifiers** | Telegram + Discord webhook push of signals |
 | **Backtester** | Walk-forward grading of every plan at +1h/+4h/+24h → win-rate, avg R, expectancy by plan type / confidence / action |
 | **Signal database** | SQLite learning store — every scan + every graded outcome, queried via `python main.py stats` |
+| **Human approval gate** | Every actionable signal enters `PENDING_REVIEW`; you approve/reject/execute/close it with one command (or the dashboard buttons). Full audit trail per signal. |
+| **Self-improvement** | `python main.py learn` recomputes a per-setup calibration profile from backtest outcomes — boosts positive-expectancy plans, dampens (or filters) negative ones. The engine literally gets better with every backtest. |
+| **Coach (teaching)** | `python main.py coach` explains *why* the engine said what it said, mentors you through the top setup step-by-step, gives personal feedback on your own approvals/rejections, and ships a full trading glossary. |
 | **CI** | GitHub Actions runs the offline test suite on every push |
-| **Web dashboard** | Single-file Flask dashboard with live scan, plans, feature snapshot, score breakdown |
+| **Web dashboard** | Single-file Flask dashboard with live scan, plans, feature snapshot, score breakdown, human-approval queue, and coach panel |
 
 ---
 
@@ -104,7 +107,22 @@ python main.py backtest --symbol BTCUSDT --tf 15m --bars 300 --horizons 1,4,24 -
 # 7. what the engine has learned (scans + backtest win-rates)
 python main.py stats
 
-# 8. run tests
+# 8. human approval gate — signals wait for YOUR yes/no
+python main.py review                # list signals awaiting approval
+python main.py approve 42 --note "clean setup"
+python main.py reject 42 --note "chasing entry"
+python main.py signal 42             # full detail + lifecycle trail
+python main.py execute 42            # mark approved trade as executed
+python main.py close 42              # record the outcome, close the loop
+
+# 9. self-improvement — recalibrate from what the engine measured
+python main.py learn
+
+# 10. coach — teaching mode
+python main.py coach                 # explain + mentor + personal feedback
+python main.py glossary FVG          # quick term lookup
+
+# 11. run tests
 python -m pytest tests/ -q
 ```
 
@@ -232,12 +250,13 @@ the output is never empty.
 ## 🧪 Tests
 
 ```bash
-python -m pytest tests/ -q      # 33 tests, fully offline (synthetic data)
+python -m pytest tests/ -q      # 52 tests, fully offline (synthetic data)
 ```
 
 Covers: indicator math & no-look-ahead, structure detection (BOS/CHOCH, FVG,
 sweeps), score bounds, plan generation (SL below entry for BUY etc.), full
-pipeline, JSON schema validation, the backtester grader, and the database.
+pipeline, JSON schema validation, the backtester grader, the database, the
+signal lifecycle (approval gate transitions), the calibrator, and the coach.
 
 On every push, GitHub Actions runs this suite automatically
 (`.github/workflows/ci.yml`) plus an offline smoke test on the sample data.
@@ -297,6 +316,55 @@ fast and deterministic.
 
 ---
 
+## 🚦 Signal lifecycle — human approval gate
+
+Every actionable signal now flows through a **human-in-the-loop** state machine
+instead of being fired straight at you:
+
+```
+CREATED ─▶ PENDING_REVIEW ─▶ APPROVED ─▶ EXECUTED ─▶ CLOSED (outcome recorded)
+               │                  │           │
+               └─▶ REJECTED       └─▶ SKIPPED ┘
+```
+
+* `scan` / `watch` create signals in **PENDING_REVIEW** (unless `--auto-approve`).
+* You decide: `python main.py approve <id>`, `reject <id>`, or click the
+  buttons in the dashboard's **Human approval queue**.
+* Every transition is logged in the `decisions` table with your note, so the
+  Coach can later teach from *your* decision pattern.
+* `python main.py signal <id>` shows the full lifecycle trail.
+
+## 🧠 Self-improvement — the closed learning loop
+
+1. **Backtest** (`backtest --save`) grades every plan → outcomes stored in DB.
+2. **Learn** (`learn`) recomputes per-setup expectancy → calibration profile:
+   * Buy Pullback / FVG Retest Buy measured positive → **confidence boosted**
+     (×1.25 in our first run)
+   * Breakout Buy / Sweep Reversal Sell measured negative → **dampened**
+     (×0.82 / ×0.64), and optionally filtered entirely if bad enough
+3. The profile is loaded on every scan, so **future signals are already smarter**.
+   With no data the profile is empty and nothing changes — calibration is
+   strictly additive. Tune via `CALIBRATE_MIN_N`, `CALIBRATE_GAIN`,
+   `CALIBRATE_FILTER` in `.env`.
+
+## 🧑‍🏫 Coach — teaching you to trade better
+
+`python main.py coach` (or the dashboard's "Explain & mentor me"):
+
+* **Explains** the current signal in plain English — trend, RSI, VWAP, structure
+  event, premium/discount, liquidity sweep — with glossary terms expanded inline.
+* **Mentors** you through the top setup step-by-step: entry, stop, take-profit
+  ladder, risk:reward, why each condition fired, plus the homework rule
+  ("if the trigger doesn't happen, the plan is cancelled").
+* **Gives personal feedback** from your own decisions:
+  *"You tend to approve Breakout Buy — the engine's measured win-rate for that
+  setup is 8% over 477 samples; consider filtering it."*
+* Ships a **glossary** (`python main.py glossary [TERM]`) covering every term
+  the engine uses — BOS, CHOCH, FVG, Order Block, Liquidity Sweep, Premium/
+  Discount, VWAP, RSI divergence, Expectancy, and more.
+
+---
+
 ## 📁 Project layout
 
 ```
@@ -309,10 +377,15 @@ crypto-brain/
 │   ├── features.py          # labeled market snapshot (60 conditions)
 │   ├── scorer.py            # weighted condition scoring → confidence
 │   ├── rules.py             # IF/THEN conditional plan generator
+│   ├── lifecycle.py         # signal state machine + human approval gate
+│   ├── calibration_hook.py  # applies the self-improvement profile to plans
 │   └── signal_engine.py     # orchestrator → final JSON
+├── brain/
+│   ├── coach.py             # teaching layer: explain / mentor / feedback / glossary
+│   └── calibrator.py        # self-improvement: expectancy → calibration profile
 ├── data/
 │   ├── binance_client.py    # geo-aware Binance market data
-│   ├── database.py          # SQLite learning store (scans/plans/backtests)
+│   ├── database.py          # SQLite learning store (scans/plans/decisions/backtests)
 │   ├── backtester.py        # walk-forward plan grader (+1h/+4h/+24h)
 │   └── sources/
 │       ├── cryptodada_website.py  # private-site connector (api/browser)
@@ -322,8 +395,8 @@ crypto-brain/
 ├── output/
 │   ├── signal_schema.py     # JSON validation
 │   └── notifiers.py         # Telegram + Discord push
-├── web/app.py               # Flask dashboard
-├── tests/                   # offline test-suite (33 tests)
+├── web/app.py               # Flask dashboard (+ approval queue + coach)
+├── tests/                   # offline test-suite (52 tests)
 ├── .github/workflows/ci.yml # auto test-runner on push
 ├── examples/example_signal.json
 └── data_samples/btcusdt_15m_sample.csv

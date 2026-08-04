@@ -32,12 +32,25 @@ def _client() -> BinanceClient:
     return BinanceClient()
 
 
+def _load_calibration() -> dict:
+    """Load the self-improvement profile from the DB (empty dict when unused)."""
+    try:
+        from data.database import SignalDB
+        with SignalDB() as db:
+            return db.load_calibration()
+    except Exception:
+        return {}
+
+
 def run_scan(symbol: str, timeframe: str, bars: int, with_context: bool = True,
-             with_llm: bool = False, save_db: bool = True) -> dict:
+             with_llm: bool = False, save_db: bool = True,
+             auto_approve: bool = False) -> dict:
     client = _client()
     df = client.klines(symbol, timeframe, bars)
+    calib = _load_calibration()
     out = analyze_frame(df, symbol=symbol, timeframe=timeframe,
-                        min_confidence=MIN_CONFIDENCE, default_rr=DEFAULT_RISK_REWARD)
+                        min_confidence=MIN_CONFIDENCE, default_rr=DEFAULT_RISK_REWARD,
+                        calibration=calib)
     payload = out.as_json()
 
     if with_context:
@@ -52,8 +65,22 @@ def run_scan(symbol: str, timeframe: str, bars: int, with_context: bool = True,
 
     if save_db:
         from data.database import SignalDB
+        from engine.lifecycle import reviewable
         with SignalDB() as db:
-            db.save_scan(payload)
+            scan_id = db.save_scan(payload)
+            payload["scan_id"] = scan_id
+            if auto_approve and reviewable(payload.get("signal", {})):
+                db.update_status(scan_id, "APPROVED", note="auto-approve",
+                                 reviewer="auto")
+                payload["lifecycle"] = {"status": "APPROVED",
+                                        "note": "auto-approved (--auto-approve)"}
+            else:
+                payload["lifecycle"] = {
+                    "status": "PENDING_REVIEW" if reviewable(payload.get("signal", {})) else "CREATED",
+                    "note": ("awaiting human approval — `python main.py review`"
+                             if reviewable(payload.get("signal", {})) else
+                             "monitor-only signal (no action required)"),
+                }
     return payload
 
 
@@ -63,7 +90,7 @@ def cmd_scan(args) -> int:
     for sym in symbols:
         try:
             payload = run_scan(sym, args.tf, args.bars, with_llm=args.llm,
-                               save_db=not args.no_save)
+                               save_db=not args.no_save, auto_approve=args.auto_approve)
             all_payloads.append(payload)
             if not args.json:
                 _print_human(payload)
@@ -98,6 +125,9 @@ def _print_human(payload: dict) -> None:
               f"L/S {ctx['long_short_ratio']:.2f}")
     else:
         print("   futures context unavailable from this network (geo-block) — works from most regions")
+    lc = payload.get("lifecycle")
+    if lc:
+        print(f"   lifecycle: {lc.get('status')} — {lc.get('note')}")
     print()
 
 
@@ -107,7 +137,7 @@ def cmd_watch(args) -> int:
     while True:
         try:
             payload = run_scan(args.symbol, args.tf, args.bars,
-                               save_db=not args.no_save)
+                               save_db=not args.no_save, auto_approve=args.auto_approve)
             sig = payload["signal"]
             if sig["action"] != "NO TRADE" and sig.get("signal_id") != last_sig:
                 last_sig = sig.get("signal_id")
@@ -166,6 +196,143 @@ def cmd_backtest(args) -> int:
             n = db.save_backtest_rows(rows, run_id)
         print(f"\nSaved {n} graded plans to the signal database (run {run_id}).")
         print("Run `python main.py stats` to see what the engine has learned.")
+    return 0
+
+
+def _print_review_row(r: dict) -> None:
+    print(f"  #{r['id']:<5} {r['symbol']:<10} {r['timeframe']:<4} {r['action']:<5} "
+          f"conf={r['confidence_label']:<7} entry={r['entry']}  "
+          f"plans={r['n_plans']}  {r['reason'][:60]}")
+
+
+def cmd_review(args) -> int:
+    from data.database import SignalDB
+    with SignalDB() as db:
+        rows = db.pending_reviews(args.symbol or None)
+    print(f"Pending human approval: {len(rows)}")
+    for r in rows:
+        _print_review_row(r)
+    print("\nApprove:  python main.py approve <id> [--note ...]")
+    print("Reject:   python main.py reject <id> [--note ...]")
+    print("Details:  python main.py signal <id>")
+    return 0
+
+
+def _decide(args, to_state: str) -> int:
+    from data.database import SignalDB
+    from engine.lifecycle import LifecycleError
+    with SignalDB() as db:
+        try:
+            new = db.update_status(args.scan_id, to_state, note=args.note or "")
+        except LifecycleError as exc:
+            print(f"[!] {exc}", file=sys.stderr)
+            return 1
+        if new is None:
+            print(f"[!] scan #{args.scan_id} not found", file=sys.stderr)
+            return 1
+        sig = db.get_scan(args.scan_id)
+    print(f"scan #{args.scan_id} → {new}  ({sig['symbol']} {sig['action']} "
+          f"{sig['entry']})  note: {args.note or '—'}")
+    return 0
+
+
+def cmd_approve(args) -> int:
+    return _decide(args, "APPROVED")
+
+
+def cmd_reject(args) -> int:
+    return _decide(args, "REJECTED")
+
+
+def cmd_execute(args) -> int:
+    return _decide(args, "EXECUTED")
+
+
+def cmd_close(args) -> int:
+    return _decide(args, "CLOSED")
+
+
+def cmd_signal(args) -> int:
+    from data.database import SignalDB
+    import json as _json
+    with SignalDB() as db:
+        scan = db.get_scan(args.scan_id)
+        if scan is None:
+            print(f"[!] scan #{args.scan_id} not found", file=sys.stderr)
+            return 1
+        history = db.decision_history(args.scan_id)
+    print(f"scan #{scan['id']} — {scan['symbol']} {scan['timeframe']} {scan['action']} "
+          f"({scan['created_at']})")
+    print(f"  status: {scan['status']}  conf: {scan['confidence_label']}  "
+          f"entry: {scan['entry']}  SL: {scan['stop_loss']}  TP: {scan['take_profit']}")
+    print(f"  reason: {scan['reason']}")
+    print("  lifecycle:")
+    for h in history:
+        print(f"    {h['from_state']} → {h['to_state']}  by {h['reviewer']}  "
+              f"note: {h['note'] or '—'}")
+    if scan.get("plans_json"):
+        plans = _json.loads(scan["plans_json"])
+        print(f"  plans ({len(plans)}):")
+        for p in plans[:5]:
+            print(f"    [{p['confidence']}%] {p['type']} — {p['condition'][:80]}")
+    return 0
+
+
+def cmd_learn(args) -> int:
+    from brain.calibrator import learn, describe
+    result = learn()
+    print(describe(result["profile"]))
+    if args.json:
+        import json as _json
+        print(_json.dumps(result["profile"], indent=2))
+    return 0
+
+
+def cmd_coach(args) -> int:
+    from data.database import SignalDB
+    from brain.coach import explain_signal, mentor, personal_feedback, GLOSSARY
+
+    # 1) teach from the current market (fresh scan, no DB save)
+    payload = run_scan(args.symbol, args.tf, args.bars, save_db=False)
+    print("=" * 70)
+    print("🧑‍🏫 COACH — what's happening right now")
+    print("=" * 70)
+    for line in explain_signal(payload):
+        print(" ", line)
+    print()
+    print(mentor(payload))
+
+    # 2) personal feedback from decision history
+    with SignalDB() as db:
+        fb = personal_feedback(db)
+    print()
+    print("📈 YOUR TRADING FEEDBACK")
+    for f in fb:
+        print(" ", f)
+
+    # 3) optional glossary deep-dive
+    if args.term:
+        term = next((k for k in GLOSSARY if k.lower() == args.term.lower()), None)
+        if term:
+            meaning, why = GLOSSARY[term]
+            print(f"\n📖 {term}: {meaning}\n   Why it matters: {why}")
+        else:
+            print(f"\n[!] unknown term '{args.term}' — try: {', '.join(GLOSSARY)}")
+    return 0
+
+
+def cmd_glossary(args) -> int:
+    from brain.coach import GLOSSARY
+    if args.term:
+        term = next((k for k in GLOSSARY if k.lower() == args.term.lower()), None)
+        if term:
+            meaning, why = GLOSSARY[term]
+            print(f"{term}: {meaning}\n  Why it matters: {why}")
+        else:
+            print(f"unknown term '{args.term}'")
+        return 0
+    for term, (meaning, why) in GLOSSARY.items():
+        print(f"{term:<18} {meaning}")
     return 0
 
 
@@ -234,6 +401,8 @@ def main() -> int:
     p_scan.add_argument("--json", action="store_true", help="raw JSON output")
     p_scan.add_argument("--llm", action="store_true", help="attach LLM narrative if configured")
     p_scan.add_argument("--no-save", action="store_true", help="do not write the scan to the signal database")
+    p_scan.add_argument("--auto-approve", action="store_true",
+                        help="skip the human approval gate (unattended mode)")
     p_scan.set_defaults(func=cmd_scan)
 
     p_watch = sub.add_parser("watch", help="continuous monitor loop")
@@ -243,6 +412,8 @@ def main() -> int:
     p_watch.add_argument("--interval", type=int, default=120)
     p_watch.add_argument("--notify", action="store_true", help="push signals to Telegram/Discord")
     p_watch.add_argument("--no-save", action="store_true", help="do not write scans to the signal database")
+    p_watch.add_argument("--auto-approve", action="store_true",
+                        help="approve signals automatically (unattended mode)")
     p_watch.set_defaults(func=cmd_watch)
 
     p_src = sub.add_parser("sources", help="pull CryptoDada + Discord + news")
@@ -260,6 +431,49 @@ def main() -> int:
     p_stats = sub.add_parser("stats", help="what the engine has learned (DB + backtests)")
     p_stats.add_argument("--symbol", default=None)
     p_stats.set_defaults(func=cmd_stats)
+
+    p_rev = sub.add_parser("review", help="list signals awaiting human approval")
+    p_rev.add_argument("--symbol", default=None)
+    p_rev.set_defaults(func=cmd_review)
+
+    p_app = sub.add_parser("approve", help="approve a pending signal")
+    p_app.add_argument("scan_id", type=int)
+    p_app.add_argument("--note", default="")
+    p_app.set_defaults(func=cmd_approve)
+
+    p_rej = sub.add_parser("reject", help="reject a pending signal")
+    p_rej.add_argument("scan_id", type=int)
+    p_rej.add_argument("--note", default="")
+    p_rej.set_defaults(func=cmd_reject)
+
+    p_exec = sub.add_parser("execute", help="mark an approved signal as executed")
+    p_exec.add_argument("scan_id", type=int)
+    p_exec.add_argument("--note", default="")
+    p_exec.set_defaults(func=cmd_execute)
+
+    p_close = sub.add_parser("close", help="close an executed signal (outcome recorded)")
+    p_close.add_argument("scan_id", type=int)
+    p_close.add_argument("--note", default="")
+    p_close.set_defaults(func=cmd_close)
+
+    p_sig = sub.add_parser("signal", help="show a signal's full detail + lifecycle")
+    p_sig.add_argument("scan_id", type=int)
+    p_sig.set_defaults(func=cmd_signal)
+
+    p_learn = sub.add_parser("learn", help="recompute the self-improvement calibration profile")
+    p_learn.add_argument("--json", action="store_true")
+    p_learn.set_defaults(func=cmd_learn)
+
+    p_coach = sub.add_parser("coach", help="teaching mode: explain + mentor + personal feedback")
+    p_coach.add_argument("--symbol", default=SYMBOL)
+    p_coach.add_argument("--tf", default=TIMEFRAME)
+    p_coach.add_argument("--bars", type=int, default=BARS)
+    p_coach.add_argument("--term", default=None, help="explain a glossary term (e.g. FVG)")
+    p_coach.set_defaults(func=cmd_coach)
+
+    p_gl = sub.add_parser("glossary", help="list trading terms used by the engine")
+    p_gl.add_argument("term", nargs="?", default=None)
+    p_gl.set_defaults(func=cmd_glossary)
 
     p_web = sub.add_parser("web", help="run the web dashboard")
     p_web.add_argument("--host", default=None)
