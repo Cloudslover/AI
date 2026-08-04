@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+VERSION = "1.7.1"
+
 ROOT = Path(__file__).parent
 
 # ── Market data ──────────────────────────────────────────────────────────

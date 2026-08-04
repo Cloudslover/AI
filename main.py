@@ -20,7 +20,7 @@ from typing import Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (SYMBOL, TIMEFRAME, BARS, MIN_CONFIDENCE, DEFAULT_RISK_REWARD,
-                    DASHBOARD_HOST, DASHBOARD_PORT)
+                    DASHBOARD_HOST, DASHBOARD_PORT, VERSION)
 
 from data.binance_client import BinanceClient
 from engine.signal_engine import analyze_frame
@@ -650,7 +650,7 @@ def main() -> int:
         # Default: open the all-in-one dashboard (watch everything + click to approve)
         from web.app import make_app, serve
         print("=" * 62)
-        print("🧠 CryptoBrain — all-in-one dashboard")
+        print(f"🧠 CryptoBrain v{VERSION} — all-in-one dashboard")
         print(f"   open  http://localhost:{DASHBOARD_PORT}   (watch + click approve/reject)")
         print("   everything runs from the dashboard — no commands needed")
         print("   advanced/automation: scan | watch | analyze | backtest | learn | stats |")

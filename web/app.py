@@ -35,7 +35,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from flask import Flask, jsonify, render_template_string, request
 
-from config import SYMBOL, TIMEFRAME, BARS, MIN_CONFIDENCE, DEFAULT_RISK_REWARD, DASHBOARD_HOST, DASHBOARD_PORT
+from config import SYMBOL, TIMEFRAME, BARS, MIN_CONFIDENCE, DEFAULT_RISK_REWARD, DASHBOARD_HOST, DASHBOARD_PORT, VERSION
 from data.binance_client import BinanceClient
 from engine.signal_engine import analyze_frame
 from output.signal_schema import validate_output
@@ -201,7 +201,7 @@ HTML = r"""<!doctype html>
   .note{font-size:11px;color:var(--mut)}
 </style></head><body>
 <div class="flex" style="justify-content:space-between;margin-bottom:16px">
-  <div><h1>🧠 CryptoBrain — All-in-One</h1>
+  <div><h1>🧠 CryptoBrain — All-in-One <span class="badge" style="background:var(--line)">v{{version}}</span></h1>
   <div class="sub">watch everything · click to approve · the engine learns from you</div></div>
   <div class="flex">
     <input id="sym" value="{{symbol}}" size="10">
@@ -585,27 +585,28 @@ async function decide(id, decision, note){
 async function openModal(id){
   try{
     const d=await (await fetch('/api/signal?id='+id)).json();
-    const s=d.scan||{}, plans=d.plans||[], decs=d.decisions||[];
+    const s=d.scan||{}, plans=(Array.isArray(d.plans)?d.plans:[]), decs=(Array.isArray(d.decisions)?d.decisions:[]);
+    const tps=p=>{ try{ return (p.take_profits||[]).map(fmt).join(', '); }catch(e){ return '—'; } };
     document.getElementById('mbody').innerHTML=`
-      <div class="flex" style="justify-content:space-between"><h2 style="margin:0">Signal #${s.id} — ${s.symbol} ${s.timeframe} <span class="pill ${cls(s.action)}">${s.action}</span></h2>
+      <div class="flex" style="justify-content:space-between"><h2 style="margin:0">Signal #${s.id} — ${esc(s.symbol||'')} ${esc(s.timeframe||'')} <span class="pill ${cls(s.action)}">${esc(s.action||'')}</span></h2>
       <button class="rowbtn" onclick="closeModal()">✕</button></div>
       <div class="kv" style="margin-top:12px">
-        <b>Status</b><span>${s.status}</span><b>Confidence</b><span>${s.confidence_label}</span>
+        <b>Status</b><span>${esc(s.status||'—')}</span><b>Confidence</b><span>${esc(s.confidence_label||'—')}</span>
         <b>Entry</b><span class="mono">${fmt(s.entry)}</span><b>SL</b><span class="mono">${fmt(s.stop_loss)}</span>
-        <b>TP</b><span class="mono">${fmt(s.take_profit)}</span><b>RR</b><span>${s.risk_reward}</span>
-        <b>Created</b><span>${s.created_at||''}</span><b>Reason</b><span>${esc(s.reason)}</span>
+        <b>TP</b><span class="mono">${fmt(s.take_profit)}</span><b>RR</b><span>${s.risk_reward??'—'}</span>
+        <b>Created</b><span>${esc(s.created_at||'—')}</span><b>Reason</b><span>${esc(s.reason||'')}</span>
       </div>
       <h3 style="margin:14px 0 6px">Lifecycle trail</h3>
-      ${decs.length?decs.map(x=>`<div class="muted">${x.from_state} → <b>${x.to_state}</b> by ${x.reviewer} <span class="note">${esc(x.note||'')}</span></div>`).join(''):'<span class="muted">no decisions yet</span>'}
+      ${decs.length?decs.map(x=>`<div class="muted">${esc(x.from_state||'')} → <b>${esc(x.to_state||'')}</b> by ${esc(x.reviewer||'')} <span class="note">${esc(x.note||'')}</span></div>`).join(''):'<span class="muted">no decisions yet</span>'}
       <h3 style="margin:14px 0 6px">Plans</h3>
-      ${plans.length?plans.map(p=>`<div class="plan"><div class="h"><b>${p.type}</b><span class="badge">${p.confidence}%</span></div><div class="c">${esc(p.condition)}</div><div class="c mono">entry ${fmt(p.entry)} · sl ${fmt(p.stop_loss)} · tp ${p.take_profits.map(fmt).join(', ')} · RR ${p.risk_reward}</div></div>`).join(''):'<span class="muted">none</span>'}
+      ${plans.length?plans.map(p=>`<div class="plan"><div class="h"><b>${esc(p.type||'')}</b><span class="badge">${p.confidence??''}%</span></div><div class="c">${esc(p.condition||'')}</div><div class="c mono">entry ${fmt(p.entry)} · sl ${fmt(p.stop_loss)} · tp ${tps(p)} · RR ${p.risk_reward??'—'}</div></div>`).join(''):'<span class="muted">none</span>'}
       <div class="flex" style="margin-top:12px">
         ${s.status==='PENDING_REVIEW'?`<button class="rowbtn ok" onclick="decide(${s.id},'APPROVED')">✓ Approve</button><button class="rowbtn no" onclick="decide(${s.id},'REJECTED')">✗ Reject</button>`:''}
         ${s.status==='APPROVED'?`<button class="rowbtn" onclick="decide(${s.id},'EXECUTED')">▶ Executed</button><button class="rowbtn no" onclick="decide(${s.id},'SKIPPED')">Skip</button>`:''}
         ${s.status==='EXECUTED'?`<button class="rowbtn" style="background:var(--amber)" onclick="decide(${s.id},'CLOSED')">✔ Close</button>`:''}
       </div>`;
     document.getElementById('modal').style.display='block';
-  }catch(e){ alert('Error: '+e); }
+  }catch(e){ document.getElementById('mbody').innerHTML='<div class="err">Error opening signal: '+esc(e)+'</div>'; }
 }
 function closeModal(){ document.getElementById('modal').style.display='none'; }
 document.getElementById('modal').addEventListener('click', e=>{ if(e.target.id==='modal') closeModal(); });
@@ -632,7 +633,7 @@ def make_app() -> Flask:
 
     @app.get("/")
     def index():
-        return render_template_string(HTML, symbol=SYMBOL, tf=TIMEFRAME)
+        return render_template_string(HTML, symbol=SYMBOL, tf=TIMEFRAME, version=VERSION)
 
     @app.get("/api/scan")
     def api_scan():
