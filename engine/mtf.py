@@ -69,13 +69,24 @@ def _score(view: dict) -> float:
 
 
 def analyze_mtf(symbol: str, client, tfs: list | None = None,
-                config: list | None = None) -> dict:
+                config: list | None = None,
+                prefetched: dict | None = None) -> dict:
     """Fetch and analyze multiple timeframes in parallel, then combine into a
-    consensus read."""
+    consensus read.
+
+    `prefetched` maps timeframe -> DataFrame already fetched by the caller
+    (e.g. the execution timeframe), so it is not re-downloaded.
+    """
     config = config or TF_CONFIG
+    prefetched = prefetched or {}
     views: dict[str, dict] = {}
 
     def _one(tf: str, bars: int):
+        if tf in prefetched:
+            try:
+                return tf, analyze_timeframe(prefetched[tf], tf)
+            except Exception:
+                return tf, {"tf": tf, "available": False}
         try:
             df = client.klines(symbol, tf, bars)
             return tf, analyze_timeframe(df, tf)

@@ -44,11 +44,14 @@ def analyze_full(symbol: str = SYMBOL, timeframe: str = TIMEFRAME,
     client = client or BinanceClient()
     t0 = time.time()
 
-    # 1) Multi-timeframe
-    mtf = analyze_mtf(symbol, client)
+    # 0) Fetch the execution-timeframe data ONCE and reuse it for both the
+    #    single-frame engine and the MTF view (no duplicate downloads).
+    df = client.klines(symbol, timeframe, bars)
+
+    # 1) Multi-timeframe (parallel; skips re-fetching the execution TF)
+    mtf = analyze_mtf(symbol, client, prefetched={timeframe: df})
 
     # 2) single-frame engine (with calibration)
-    df = client.klines(symbol, timeframe, bars)
     calib = _load_calibration()
     frame = analyze_frame(df, symbol=symbol, timeframe=timeframe,
                           min_confidence=MIN_CONFIDENCE,

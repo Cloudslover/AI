@@ -30,8 +30,11 @@ TIMEFRAME_TO_MS = {
     "6h": 21_600_000, "12h": 43_200_000, "1d": 86_400_000, "1w": 604_800_000,
 }
 
-TIMEOUT = 10
-_RETRIES = 2
+TIMEOUT = 8
+_RETRIES = 1
+FUT_TIMEOUT = 5
+FUT_RETRIES = 0
+_CONTEXT_TTL = 60  # seconds to cache market_context
 
 
 class BinanceClient:
@@ -41,6 +44,9 @@ class BinanceClient:
         # Thread-local sessions so parallel timeframe fetches are safe.
         self._local = threading.local()
         self._futures_ok: Optional[bool] = None  # None = not yet tested
+        self._futures_checked_at: float = 0.0
+        self._context_cache: Optional[dict] = None
+        self._context_at: float = 0.0
 
     @property
     def session(self) -> requests.Session:
@@ -51,23 +57,27 @@ class BinanceClient:
             self._local.session = s
         return s
 
-    # ── helpers ──────────────────────────────────────────────────────────
-    def _get(self, host: str, path: str, params: dict) -> Optional[dict]:
-        for attempt in range(self.retries + 1):
+    def _get(self, host: str, path: str, params: dict,
+             timeout: Optional[int] = None, retries: Optional[int] = None) -> Optional[dict]:
+        timeout = timeout or self.timeout
+        retries = retries or self.retries
+        for attempt in range(retries + 1):
             try:
-                r = self.session.get(f"{host}{path}", params=params, timeout=self.timeout)
+                r = self.session.get(f"{host}{path}", params=params, timeout=timeout)
                 if r.status_code == 200:
                     return r.json()
                 if r.status_code in (451, 403, 429):
                     return None  # geo-block / rate-limit — not retryable
             except requests.RequestException:
                 pass
-            time.sleep(0.4 * (attempt + 1))
+            time.sleep(0.3 * (attempt + 1))
         return None
 
-    def _get_first_host(self, hosts: list[str], path: str, params: dict) -> Optional[dict]:
+    def _get_first_host(self, hosts: list[str], path: str, params: dict,
+                        timeout: Optional[int] = None,
+                        retries: Optional[int] = None) -> Optional[dict]:
         for host in hosts:
-            data = self._get(host, path, params)
+            data = self._get(host, path, params, timeout=timeout, retries=retries)
             if data is not None:
                 return data
         return None
@@ -96,9 +106,13 @@ class BinanceClient:
     # ── Futures (optional; may geo-block) ────────────────────────────────
     @property
     def futures_available(self) -> bool:
-        if self._futures_ok is None:
+        now = time.time()
+        # Cache the availability probe for 60s and NEVER block more than ~5s.
+        if self._futures_ok is None or now - self._futures_checked_at > 60:
             self._futures_ok = self._get_first_host(
-                BINANCE_FUTURES_HOSTS, "/fapi/v1/ping", {}) is not None
+                BINANCE_FUTURES_HOSTS, "/fapi/v1/ping", {},
+                timeout=FUT_TIMEOUT, retries=FUT_RETRIES) is not None
+            self._futures_checked_at = now
         return self._futures_ok
 
     def funding_rate(self, symbol: str = "BTCUSDT") -> Optional[dict]:
@@ -106,7 +120,7 @@ class BinanceClient:
         if not self.futures_available:
             return None
         data = self._get_first_host(BINANCE_FUTURES_HOSTS, "/fapi/v1/premiumIndex",
-                                    {"symbol": symbol})
+                                    {"symbol": symbol}, timeout=FUT_TIMEOUT, retries=FUT_RETRIES)
         if not data:
             return None
         return {
@@ -119,7 +133,7 @@ class BinanceClient:
         if not self.futures_available:
             return None
         data = self._get_first_host(BINANCE_FUTURES_HOSTS, "/fapi/v1/openInterest",
-                                    {"symbol": symbol})
+                                    {"symbol": symbol}, timeout=FUT_TIMEOUT, retries=FUT_RETRIES)
         if not data:
             return None
         return {"open_interest": float(data.get("openInterest", 0))}
@@ -130,7 +144,8 @@ class BinanceClient:
             return None
         data = self._get_first_host(
             BINANCE_FUTURES_HOSTS, "/futures/data/globalLongShortAccountRatio",
-            {"symbol": symbol, "period": period, "limit": limit})
+            {"symbol": symbol, "period": period, "limit": limit},
+            timeout=FUT_TIMEOUT, retries=FUT_RETRIES)
         if not data:
             return None
         latest = data[-1] if isinstance(data, list) and data else data
@@ -142,7 +157,7 @@ class BinanceClient:
         if not self.futures_available:
             return None
         data = self._get_first_host(BINANCE_FUTURES_HOSTS, "/fapi/v1/ticker/24hr",
-                                    {"symbol": symbol})
+                                    {"symbol": symbol}, timeout=FUT_TIMEOUT, retries=FUT_RETRIES)
         if not data:
             return None
         return {
@@ -154,12 +169,21 @@ class BinanceClient:
 
     # ── Combined convenience ─────────────────────────────────────────────
     def market_context(self, symbol: str = "BTCUSDT") -> dict:
-        ctx = {"futures": False}
+        """Futures context, cached 60s and fetched in parallel so it can never
+        block the dashboard for long. Returns quickly even when unreachable."""
+        now = time.time()
+        if self._context_cache and now - self._context_at < _CONTEXT_TTL:
+            return self._context_cache
+
+        ctx = {"futures": False, "note": "futures unreachable from this network"}
         if self.futures_available:
-            fr = self.funding_rate(symbol)
-            oi = self.open_interest(symbol)
-            ls = self.long_short_ratio(symbol)
-            liq = self.liquidations(symbol)
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=4) as ex:
+                fr = ex.submit(self.funding_rate, symbol)
+                oi = ex.submit(self.open_interest, symbol)
+                ls = ex.submit(self.long_short_ratio, symbol)
+                liq = ex.submit(self.liquidations, symbol)
+                fr, oi, ls, liq = fr.result(), oi.result(), ls.result(), liq.result()
             ctx = {
                 "futures": True,
                 "funding_rate_pct": fr["funding_rate_pct"] if fr else None,
@@ -169,4 +193,5 @@ class BinanceClient:
                 "liq_24h_low": liq["24h_low"] if liq else None,
                 "liq_24h_change_pct": liq["24h_price_change_pct"] if liq else None,
             }
+        self._context_cache, self._context_at = ctx, now
         return ctx

@@ -64,7 +64,7 @@ def _cached(name: str, fn, ttl: int = CACHE_TTL):
 # ── Fear & Greed ─────────────────────────────────────────────────────────
 def fear_greed() -> dict:
     def _f():
-        r = requests.get("https://api.alternative.me/fng/?limit=1", timeout=8)
+        r = requests.get("https://api.alternative.me/fng/?limit=1", timeout=6)
         d = r.json()["data"][0]
         return {"available": True, "value": int(d["value"]),
                 "label": d["value_classification"]}
@@ -74,7 +74,7 @@ def fear_greed() -> dict:
 # ── BTC dominance / total market cap (CoinGecko global) ──────────────────
 def dominance() -> dict:
     def _d():
-        r = requests.get("https://api.coingecko.com/api/v3/global", timeout=8,
+        r = requests.get("https://api.coingecko.com/api/v3/global", timeout=6,
                          headers={"User-Agent": "CryptoBrain/1.0"})
         g = r.json()["data"]
         return {
@@ -91,7 +91,7 @@ def dominance() -> dict:
 def equities() -> dict:
     def _e():
         url = "https://stooq.com/q/l/?s=^spx,^ndq,dx.f,xauusd&f=sd2t2ohlcv&h&e=csv"
-        r = requests.get(url, timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+        r = requests.get(url, timeout=6, headers={"User-Agent": "Mozilla/5.0"})
         rows = {}
         for line in r.text.strip().splitlines()[1:]:
             parts = line.split(",")
@@ -272,7 +272,7 @@ def collect(price_1d: Optional[float] = None, sma200_1d: Optional[float] = None)
         futs = {ex.submit(fn): name for name, fn in jobs.items()}
         for name, fut in ((futs[f], f) for f in list(futs)):
             try:
-                results[name] = fut.result(timeout=15)
+                results[name] = fut.result(timeout=10)
             except Exception:
                 results[name] = {"available": False}
 

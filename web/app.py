@@ -69,17 +69,83 @@ def _persist(payload: dict) -> tuple[int, str]:
     return scan_id, status
 
 
+_SCAN_TIMEOUT = 45  # seconds — hard cap on a full analysis; fall back below
+
+
+def _basic_scan(symbol: str, tf: str, save: bool) -> dict:
+    """Engine-only quick scan (no MTF/context) — the guaranteed fallback so the
+    dashboard always shows data even if external sources are unreachable."""
+    import threading
+    result: dict = {}
+
+    def _work():
+        try:
+            client = BinanceClient()
+            df = client.klines(symbol, tf, bars=BARS)
+            out = analyze_frame(df, symbol=symbol, timeframe=tf,
+                                min_confidence=MIN_CONFIDENCE,
+                                default_rr=DEFAULT_RISK_REWARD)
+            payload = out.as_json()
+            payload["market_context"] = {"futures": False,
+                                         "note": "not checked (fallback mode)"}
+            payload["validation"] = validate_output(payload)
+            payload["degraded"] = True
+            payload["degraded_reason"] = "full analysis timed out — showing engine-only signal"
+            result["payload"] = payload
+        except Exception as exc:  # pragma: no cover
+            result["error"] = f"{type(exc).__name__}: {exc}"
+
+    t = threading.Thread(target=_work, daemon=True)
+    t.start()
+    t.join(timeout=_SCAN_TIMEOUT)
+    if "payload" in result:
+        payload = result["payload"]
+        if save:
+            try:
+                _persist(payload)
+            except Exception:
+                pass
+        return payload
+    raise ConnectionError(result.get("error", "scan timed out"))
+
+
 def compute_payload(symbol: str, tf: str, save: bool = True, use_cache: bool = True) -> dict:
     if use_cache and _CACHE["payload"] and _CACHE["payload"].get("signal", {}).get("asset") == symbol \
             and time.time() - _CACHE["ts"] < _CACHE["ttl"]:
         return _CACHE["payload"]
-    from brain.full_pipeline import analyze_full
-    client = BinanceClient()
-    payload = analyze_full(symbol, tf, bars=BARS, client=client,
-                           with_context=True, with_memory=True)
-    payload["validation"] = validate_output(payload)
+
+    # Run the full analysis (MTF + context + styles + memory) in a watchdog
+    # thread: if it exceeds _SCAN_TIMEOUT we fall back to the engine-only scan.
+    import threading
+    result: dict = {}
+
+    def _work():
+        try:
+            from brain.full_pipeline import analyze_full
+            client = BinanceClient()
+            payload = analyze_full(symbol, tf, bars=BARS, client=client,
+                                   with_context=True, with_memory=True)
+            payload["validation"] = validate_output(payload)
+            result["payload"] = payload
+        except Exception as exc:  # pragma: no cover
+            result["error"] = f"{type(exc).__name__}: {exc}"
+
+    t = threading.Thread(target=_work, daemon=True)
+    t.start()
+    t.join(timeout=_SCAN_TIMEOUT)
+
+    if "payload" not in result:
+        # Fallback: engine-only quick scan so the page never hangs.
+        payload = _basic_scan(symbol, tf, save=save)
+        _CACHE.update(payload=payload, ts=time.time())
+        return payload
+
+    payload = result["payload"]
     if save:
-        _persist(payload)
+        try:
+            _persist(payload)
+        except Exception:
+            pass
     _CACHE.update(payload=payload, ts=time.time())
     return payload
 
@@ -292,7 +358,12 @@ function render(d){
     ${mem.whipsaw?`<div class="err" style="margin-top:6px">⚠️ Whipsaw guard active — signals suppressed until market settles.</div>`:''}
     <div class="note" style="margin-top:6px">Signals change only when the market STATE changes — not every 30s refresh.</div>`);
 
-  html += card('CONNECTIONS', '<div id="conn">loading…</div>');
+  html += card('CONNECTIONS', `<div id="conn">loading…</div>
+    <div class="flex" style="margin-top:8px">
+      <button class="rowbtn" onclick="systemCheck()">🔍 System check</button>
+      <span id="diagmsg" class="note"></span>
+    </div>
+    <div id="diag" class="note" style="margin-top:6px"></div>`);
   html += card('HUMAN APPROVAL QUEUE', '<div id="queue">loading…</div>');
   html += card('RECENT SIGNALS', '<div id="hist">loading…</div>');
   html += card('LEARNING — backtest & calibration', '<div id="learn">loading…</div>', true);
@@ -359,18 +430,27 @@ function chartSVG(cs){
 async function load(force){
   const sym=document.getElementById('sym').value.trim().toUpperCase()||'BTCUSDT';
   const tf=document.getElementById('tf').value;
-  document.getElementById('app').innerHTML = `<div class="card" style="grid-column:1/-1"><h2>Scanning</h2>
-    <div class="muted">fetching 5 timeframes + news + macro + context… (first load can take ~10s, later refreshes are fast)</div></div>`;
-  const ctrl=new AbortController(); const to=setTimeout(()=>ctrl.abort(), 60000);
+  let t0=Date.now();
+  const app=document.getElementById('app');
+  app.innerHTML = `<div class="card" style="grid-column:1/-1"><h2>Scanning ${sym} ${tf}</h2>
+    <div class="muted" id="scanstatus">fetching timeframes + news + macro + context…</div></div>`;
+  const tick=setInterval(()=>{
+    const el=document.getElementById('scanstatus'); if(!el) return;
+    const s=((Date.now()-t0)/1000).toFixed(0);
+    el.textContent = s<10 ? `fetching timeframes + news + macro + context… (${s}s)` :
+                     s<30 ? `still working (${s}s) — your network may be slow, hang on…` :
+                            `this is taking long (${s}s) — will show engine-only signal shortly…`;
+  }, 1000);
+  const ctrl=new AbortController(); const to=setTimeout(()=>ctrl.abort(), 90000);
   try{
     const r=await fetch(`/api/scan?symbol=${sym}&tf=${tf}`+(force?'&force=1':''), {signal:ctrl.signal});
-    const d=await r.json(); clearTimeout(to);
-    if(d.error){ document.getElementById('app').innerHTML=`<div class="card" style="grid-column:1/-1"><div class="err">${esc(d.error)}</div><button class="rowbtn" onclick="load(true)" style="margin-top:8px">Retry</button></div>`; return; }
+    const d=await r.json(); clearTimeout(to); clearInterval(tick);
+    if(d.error){ app.innerHTML=`<div class="card" style="grid-column:1/-1"><div class="err">${esc(d.error)}</div><button class="rowbtn" onclick="load(true)" style="margin-top:8px">Retry</button></div>`; return; }
     render(d); document.getElementById('updated').textContent='updated '+new Date().toLocaleTimeString();
   }catch(e){
-    clearTimeout(to);
-    document.getElementById('app').innerHTML=`<div class="card" style="grid-column:1/-1"><div class="err">Load failed: ${esc(e.name==='AbortError'?'timed out (60s)':e)}</div>
-      <div class="note" style="margin-top:4px">Check your internet / Binance reachability, then retry.</div>
+    clearTimeout(to); clearInterval(tick);
+    app.innerHTML=`<div class="card" style="grid-column:1/-1"><div class="err">Load failed: ${esc(e.name==='AbortError'?'timed out (90s)':e)}</div>
+      <div class="note" style="margin-top:4px">Click <b>🔍 System check</b> (Connections card) to see which source is blocked, or retry.</div>
       <button class="rowbtn" onclick="load(true)" style="margin-top:8px">Retry</button></div>`;
   }
 }
@@ -469,6 +549,18 @@ async function loadSources(){
     el.innerHTML=`<div class="flex">${badge(true,'Binance data')}${badge(d.cryptodada,'CryptoDada')}${badge(d.discord_read,'Discord read')}${badge(d.discord_webhook,'Discord push')}${badge(d.telegram,'Telegram')}${badge(d.llm,'LLM brain')}</div>
       <div class="note" style="margin-top:6px">○ = not configured — add to <code>.env</code> to enable. Everything else works with no keys.</div>`;
   }catch(e){ el.innerHTML='<span class="err">'+esc(e)+'</span>'; }
+}
+
+async function systemCheck(){
+  const el=document.getElementById('diag'), m=document.getElementById('diagmsg');
+  if(el) el.innerHTML=''; if(m) m.textContent='checking… (few seconds)';
+  try{
+    const d=await (await fetch('/api/diag')).json();
+    const rows=Object.entries(d.sources||{}).map(([k,v])=>
+      `<tr><td>${k}</td><td style="color:${v.ok?'var(--green)':'var(--red)'}">${v.ok?'✓ ok':'✗ fail'}</td><td>${v.ms}ms</td><td class="note">${esc(v.err||'')}</td></tr>`).join('');
+    if(el) el.innerHTML=`<table><tr><th>Source</th><th>Status</th><th>Time</th><th>Error</th></tr>${rows}</table>`;
+    if(m) m.textContent=d.all_ok?`✓ all ${d.total} sources reachable`:`${d.ok_count}/${d.total} sources reachable — the rest will degrade gracefully`;
+  }catch(e){ if(m) m.textContent='error: '+e; }
 }
 
 async function decide(id, decision, note){
@@ -689,6 +781,61 @@ def make_app() -> Flask:
             "telegram": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
             "llm": LLM_PROVIDER != "off",
         })
+
+    @app.get("/api/diag")
+    def api_diag():
+        """Connectivity check: which external sources are reachable, with
+        response times — powers the dashboard 'System check' button."""
+        import requests as _req
+        from data.binance_client import BINANCE_HOSTS, BINANCE_FUTURES_HOSTS
+        out: dict = {}
+
+        def probe(name, fn):
+            t0 = time.time()
+            try:
+                ok = fn()
+                out[name] = {"ok": bool(ok), "ms": int((time.time() - t0) * 1000)}
+            except Exception as exc:
+                out[name] = {"ok": False, "ms": int((time.time() - t0) * 1000),
+                             "err": str(exc)[:120]}
+
+        def spot():
+            r = _req.get(f"{BINANCE_HOSTS[0]}/api/v3/ping", timeout=4)
+            return r.status_code == 200
+
+        def fapi():
+            r = _req.get(f"{BINANCE_FUTURES_HOSTS[0]}/fapi/v1/ping", timeout=4)
+            return r.status_code == 200
+
+        def fng():
+            r = _req.get("https://api.alternative.me/fng/?limit=1", timeout=4)
+            return r.status_code == 200
+
+        def cg():
+            r = _req.get("https://api.coingecko.com/api/v3/global", timeout=4,
+                         headers={"User-Agent": "CryptoBrain/1.0"})
+            return r.status_code == 200
+
+        def stooq():
+            r = _req.get("https://stooq.com/q/l/?s=^spx&f=sd2t2ohlcv&h&e=csv",
+                         timeout=4, headers={"User-Agent": "Mozilla/5.0"})
+            return r.status_code == 200
+
+        def news():
+            r = _req.get("https://cointelegraph.com/rss", timeout=4,
+                         headers={"User-Agent": "CryptoBrain/1.0"})
+            return r.status_code == 200
+
+        from concurrent.futures import ThreadPoolExecutor
+        probes = {"binance_spot": spot, "binance_futures": fapi, "fear_greed": fng,
+                  "coingecko": cg, "stooq_equities": stooq, "news_rss": news}
+        with ThreadPoolExecutor(max_workers=len(probes)) as ex:
+            futs = {ex.submit(probe, n, f): n for n, f in probes.items()}
+            for fut in futs:
+                fut.result()
+        ok_count = sum(1 for v in out.values() if v.get("ok"))
+        return jsonify({"sources": out, "ok_count": ok_count, "total": len(out),
+                        "all_ok": ok_count == len(out)})
 
     @app.get("/api/health")
     def health():
