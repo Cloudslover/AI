@@ -154,7 +154,10 @@ def build_payload(symbol: str, tf: str) -> dict:
     return compute_payload(symbol, tf, save=True, use_cache=True)
 
 
-HTML = """<!doctype html>
+# Raw string on purpose: backslash escapes inside the embedded JavaScript
+# (e.g. '\n') must reach the browser verbatim — a normal Python string would
+# convert them to real newlines and break the JS with a SyntaxError.
+HTML = r"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CryptoBrain — All-in-One</title>
@@ -211,9 +214,18 @@ HTML = """<!doctype html>
   </div>
 </div>
 <div id="app" class="grid">Loading…</div>
+<noscript><div class="card" style="grid-column:1/-1"><div class="err">JavaScript is disabled — the dashboard needs JS. Enable it and reload.</div></div></noscript>
 <div id="modal"><div class="box" id="mbody"></div></div>
 
 <script>
+window.onerror = function(msg, src, line){
+  try{
+    var box=document.createElement('div');
+    box.style.cssText='position:fixed;top:0;left:0;right:0;background:#ef4444;color:#fff;z-index:999;padding:10px;font:12px monospace;white-space:pre-wrap';
+    box.textContent='⚠️ Dashboard script error: '+msg+' (line '+line+'). Press Ctrl+F5 to hard-refresh. If it persists, run `python main.py scan` in the terminal and share the output.';
+    document.body.appendChild(box);
+  }catch(e){}
+};
 const fmt=(v,n=2)=> v==null?'—':Number(v).toLocaleString(undefined,{minimumFractionDigits:n,maximumFractionDigits:n});
 const cls=a=> a==='BUY'?'BUY':a==='SELL'?'SELL':'NOTRADE';
 const stCls=s=> s==='APPROVED'?'var(--green)':s==='REJECTED'?'var(--red)':s==='EXECUTED'?'var(--blue)':s==='CLOSED'?'var(--amber)':'var(--amber)';
@@ -327,10 +339,10 @@ function render(d){
     <b>Futures</b><span>${ctx.futures?'available':'geo-blocked from this network'}</span>
   </div>`);
 
-  const ctx=d.context||{};
-  const fng=ctx.fear_greed||{}, dom=ctx.dominance||{}, eq=ctx.equities||{},
-        macro=ctx.macro||{}, cyc=ctx.cycle||{}, geo=ctx.geopolitics||{},
-        soc=ctx.social||{}, reg=ctx.risk_regime||{};
+  const mctx=d.context||{};
+  const fng=mctx.fear_greed||{}, dom=mctx.dominance||{}, eq=mctx.equities||{},
+        macro=mctx.macro||{}, cyc=mctx.cycle||{}, geo=mctx.geopolitics||{},
+        soc=mctx.social||{}, reg=mctx.risk_regime||{};
   const cp=eq.change_pct||{};
   html += card('CONTEXT — WHAT AFFECTS PRICE', `
     <div class="kv">

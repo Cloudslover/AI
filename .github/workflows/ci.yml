@@ -29,6 +29,17 @@ jobs:
       - name: Run tests
         run: python -m pytest tests/ -q
 
+      - name: Dashboard JS syntax check (node)
+        run: |
+          python - <<'PY'
+          import re
+          src = open('web/app.py').read()
+          html = re.search(r'HTML = """(.*?)"""', src, re.S).group(1)
+          js = re.search(r'<script>(.*?)</script>', html, re.S).group(1)
+          open('/tmp/dash.js', 'w').write(js)
+          PY
+          node --check /tmp/dash.js
+
       - name: Smoke test (offline engine on sample data)
         run: python -c "
           import pandas as pd
