@@ -92,6 +92,7 @@ HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CryptoBrain — All-in-One</title>
+<link rel="icon" href="data:,">
 <style>
   :root{--bg:#0b0f17;--card:#131a26;--line:#223045;--txt:#e6edf7;--mut:#8aa0bd;
         --green:#22c55e;--red:#ef4444;--amber:#f59e0b;--blue:#3b82f6}
@@ -291,6 +292,7 @@ function render(d){
     ${mem.whipsaw?`<div class="err" style="margin-top:6px">⚠️ Whipsaw guard active — signals suppressed until market settles.</div>`:''}
     <div class="note" style="margin-top:6px">Signals change only when the market STATE changes — not every 30s refresh.</div>`);
 
+  html += card('CONNECTIONS', '<div id="conn">loading…</div>');
   html += card('HUMAN APPROVAL QUEUE', '<div id="queue">loading…</div>');
   html += card('RECENT SIGNALS', '<div id="hist">loading…</div>');
   html += card('LEARNING — backtest & calibration', '<div id="learn">loading…</div>', true);
@@ -300,7 +302,7 @@ function render(d){
   html += card('RAW JSON', `<details><summary>show</summary><pre style="max-height:380px;overflow:auto;font-size:11px">${esc(JSON.stringify(d,null,2))}</pre></details>`);
 
   document.getElementById('app').innerHTML = html;
-  loadPending(); loadHistory(); loadLearning();
+  loadPending(); loadHistory(); loadLearning(); loadSources();
   const symE=document.getElementById('sym'); const tfE=document.getElementById('tf');
   loadChart((symE?symE.value:'BTCUSDT').toUpperCase(), tfE?tfE.value:'15m');
 }
@@ -357,12 +359,20 @@ function chartSVG(cs){
 async function load(force){
   const sym=document.getElementById('sym').value.trim().toUpperCase()||'BTCUSDT';
   const tf=document.getElementById('tf').value;
+  document.getElementById('app').innerHTML = `<div class="card" style="grid-column:1/-1"><h2>Scanning</h2>
+    <div class="muted">fetching 5 timeframes + news + macro + context… (first load can take ~10s, later refreshes are fast)</div></div>`;
+  const ctrl=new AbortController(); const to=setTimeout(()=>ctrl.abort(), 60000);
   try{
-    const r=await fetch(`/api/scan?symbol=${sym}&tf=${tf}`+(force?'&force=1':''));
-    const d=await r.json();
-    if(d.error){ document.getElementById('app').innerHTML='<div class="err">'+esc(d.error)+'</div>'; return; }
+    const r=await fetch(`/api/scan?symbol=${sym}&tf=${tf}`+(force?'&force=1':''), {signal:ctrl.signal});
+    const d=await r.json(); clearTimeout(to);
+    if(d.error){ document.getElementById('app').innerHTML=`<div class="card" style="grid-column:1/-1"><div class="err">${esc(d.error)}</div><button class="rowbtn" onclick="load(true)" style="margin-top:8px">Retry</button></div>`; return; }
     render(d); document.getElementById('updated').textContent='updated '+new Date().toLocaleTimeString();
-  }catch(e){ document.getElementById('app').innerHTML='<div class="err">Error: '+esc(e)+'</div>'; }
+  }catch(e){
+    clearTimeout(to);
+    document.getElementById('app').innerHTML=`<div class="card" style="grid-column:1/-1"><div class="err">Load failed: ${esc(e.name==='AbortError'?'timed out (60s)':e)}</div>
+      <div class="note" style="margin-top:4px">Check your internet / Binance reachability, then retry.</div>
+      <button class="rowbtn" onclick="load(true)" style="margin-top:8px">Retry</button></div>`;
+  }
 }
 
 async function loadPending(){
@@ -400,24 +410,65 @@ async function loadLearning(){
     const d=await (await fetch('/api/learning')).json();
     const el=document.getElementById('learn'); if(!el) return;
     const bt=d.backtest||{}, cal=d.calibration||{};
-    let html='';
+    let html=`<div class="flex" style="margin-bottom:8px">
+      <button class="rowbtn" onclick="learnNow()">⚡ Learn now</button>
+      <button class="rowbtn" onclick="backtestNow()">▶ Quick backtest + learn</button>
+      <span id="learnmsg" class="note"></span></div>`;
     const o=bt.overall||{};
+    const entries=Object.entries(cal||{});
     if(o.n){
       html+=`<div class="kv" style="margin-bottom:8px"><b>Graded</b><span>${o.n} plans</span>
         <b>Win-rate</b><span>${o.win_rate!=null?(o.win_rate*100).toFixed(1)+'%':'n/a'}</span>
         <b>Avg R</b><span>${o.avg_rr}</span><b>Wins/Losses</b><span>${o.wins}/${o.losses}</span></div>`;
       html+=`<table><tr><th>Plan type</th><th>n</th><th>Win%</th><th>AvgR</th></tr>`+
         (bt.by_type||[]).map(r=>`<tr><td>${esc(r.plan_type)}</td><td>${r.n}</td><td>${r.win_rate!=null?(r.win_rate*100).toFixed(0)+'%':'—'}</td><td>${r.avg_rr}</td></tr>`).join('')+`</table>`;
+      if(o.n && !entries.length){
+        html+=`<div class="note" style="margin-top:6px">Backtest data exists but is not applied yet — click <b>⚡ Learn now</b>.</div>`;
+      }
     } else {
-      html+=`<span class="muted">No backtest data yet — run <code>python main.py backtest --save</code> then <code>python main.py learn</code>.</span>`;
+      html+=`<span class="muted">No backtest data yet. Click <b>▶ Quick backtest + learn</b> to grade the engine on recent data (~30s) and auto-apply the calibration.</span>`;
     }
-    const entries=Object.entries(cal||{});
     if(entries.length){
       html+=`<div style="margin-top:10px"><b>Calibration (applied to future signals)</b><table><tr><th>Plan</th><th>Mult</th><th>Exp R</th><th>Samples</th></tr>`+
         entries.map(([k,v])=>`<tr><td>${esc(k)}</td><td>${v.filtered?'<span class="err">FILTERED</span>':'×'+v.multiplier}</td><td>${v.expectancy!=null?v.expectancy.toFixed(2):'—'}</td><td>${v.samples}</td></tr>`).join('')+`</table></div>`;
     }
     el.innerHTML=html;
   }catch(e){ const el=document.getElementById('learn'); if(el) el.innerHTML='<span class="err">'+esc(e)+'</span>'; }
+}
+
+async function learnNow(){
+  const m=document.getElementById('learnmsg'); if(m) m.textContent='learning…';
+  try{
+    const d=await (await fetch('/api/learn',{method:'POST'})).json();
+    if(m) m.textContent=d.ok?`✓ calibration saved (${Object.keys(d.profile||{}).length} setups)`:'error: '+(d.error||'');
+  }catch(e){ if(m) m.textContent='error: '+e; }
+  loadLearning(); load(true);
+}
+
+async function backtestNow(){
+  const b=document.querySelector('button[onclick="backtestNow()"]');
+  const m=document.getElementById('learnmsg');
+  if(b){ b.disabled=true; b.textContent='running… up to ~30s'; }
+  if(m) m.textContent='backtesting recent bars + learning…';
+  try{
+    const r=await fetch('/api/backtest',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({symbol:(document.getElementById('sym').value.trim().toUpperCase()||'BTCUSDT'),
+                           tf:document.getElementById('tf').value, bars:300, step:3, horizons:'1,4,24'})});
+    const d=await r.json();
+    if(m) m.textContent=d.ok?`✓ graded ${d.saved} plans — calibration updated`:'error: '+(d.error||'');
+  }catch(e){ if(m) m.textContent='error: '+e; }
+  if(b){ b.disabled=false; b.textContent='▶ Quick backtest + learn'; }
+  loadLearning(); load(true);
+}
+
+async function loadSources(){
+  const el=document.getElementById('conn'); if(!el) return;
+  try{
+    const d=await (await fetch('/api/sources')).json();
+    const badge=(on,label)=>`<span class="badge" style="background:${on?'rgba(34,197,94,.15)':'rgba(139,160,189,.12)'};color:${on?'var(--green)':'var(--mut)'};border-color:${on?'var(--green)':'transparent'}">${label} ${on?'●':'○'}</span>`;
+    el.innerHTML=`<div class="flex">${badge(true,'Binance data')}${badge(d.cryptodada,'CryptoDada')}${badge(d.discord_read,'Discord read')}${badge(d.discord_webhook,'Discord push')}${badge(d.telegram,'Telegram')}${badge(d.llm,'LLM brain')}</div>
+      <div class="note" style="margin-top:6px">○ = not configured — add to <code>.env</code> to enable. Everything else works with no keys.</div>`;
+  }catch(e){ el.innerHTML='<span class="err">'+esc(e)+'</span>'; }
 }
 
 async function decide(id, decision, note){
@@ -583,6 +634,61 @@ def make_app() -> Flask:
         mem = SignalMemory()
         return jsonify({"state": mem.get_state(symbol, tf),
                         "events": mem.history(symbol, tf, limit=15)})
+
+    @app.post("/api/learn")
+    def api_learn():
+        """One-click: recompute the calibration profile from stored backtests."""
+        from brain.calibrator import learn
+        try:
+            res = learn()
+            return jsonify({"ok": True, **res})
+        except Exception as exc:  # pragma: no cover
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 500
+
+    @app.post("/api/backtest")
+    def api_backtest():
+        """One-click: quick backtest on recent bars + auto-learn."""
+        body = request.get_json(silent=True) or {}
+        symbol = body.get("symbol", SYMBOL).upper()
+        tf = body.get("tf", TIMEFRAME)
+        bars = min(int(body.get("bars", 300)), 1000)
+        step = int(body.get("step", 3))
+        horizons = [float(h) for h in str(body.get("horizons", "1,4,24")).split(",") if h]
+        try:
+            from brain.calibrator import learn
+            from data.backtester import run_backtest
+            from data.database import SignalDB
+            df = BinanceClient().klines(symbol, tf, bars)
+            res = run_backtest(df, symbol=symbol, timeframe=tf,
+                               horizons=horizons, step=step,
+                               min_confidence=MIN_CONFIDENCE)
+            run_id = time.strftime("%Y%m%d_%H%M%S")
+            rows = []
+            for g in res["graded"]:
+                r = g.as_row()
+                r.update({"run_id": run_id, "symbol": symbol, "timeframe": tf})
+                rows.append(r)
+            with SignalDB() as db:
+                n = db.save_backtest_rows(rows, run_id)
+            profile = learn()
+            return jsonify({"ok": True, "saved": n, "report": res["report"],
+                            "calibration": profile["profile"]})
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 500
+
+    @app.get("/api/sources")
+    def api_sources():
+        """Configuration status of optional external connections."""
+        from config import (CRYPTODADA_BASE_URL, DISCORD_TOKEN, DISCORD_CHANNEL_IDS,
+                            DISCORD_ANNOUNCE_WEBHOOK, TELEGRAM_BOT_TOKEN,
+                            TELEGRAM_CHAT_ID, LLM_PROVIDER)
+        return jsonify({
+            "cryptodada": bool(CRYPTODADA_BASE_URL and "YOUR-CRYPTODADA" not in CRYPTODADA_BASE_URL),
+            "discord_read": bool(DISCORD_TOKEN and DISCORD_CHANNEL_IDS),
+            "discord_webhook": bool(DISCORD_ANNOUNCE_WEBHOOK),
+            "telegram": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
+            "llm": LLM_PROVIDER != "off",
+        })
 
     @app.get("/api/health")
     def health():

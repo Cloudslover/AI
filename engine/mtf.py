@@ -11,6 +11,8 @@ key levels (support / resistance) carried down from the higher frames.
 """
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import pandas as pd
 
 from .indicators import add_all_indicators
@@ -68,15 +70,23 @@ def _score(view: dict) -> float:
 
 def analyze_mtf(symbol: str, client, tfs: list | None = None,
                 config: list | None = None) -> dict:
-    """Fetch and analyze multiple timeframes, combine into a consensus read."""
+    """Fetch and analyze multiple timeframes in parallel, then combine into a
+    consensus read."""
     config = config or TF_CONFIG
     views: dict[str, dict] = {}
-    for tf, bars in config:
+
+    def _one(tf: str, bars: int):
         try:
             df = client.klines(symbol, tf, bars)
-            views[tf] = analyze_timeframe(df, tf)
+            return tf, analyze_timeframe(df, tf)
         except Exception:
-            views[tf] = {"tf": tf, "available": False}
+            return tf, {"tf": tf, "available": False}
+
+    with ThreadPoolExecutor(max_workers=len(config)) as ex:
+        futures = [ex.submit(_one, tf, bars) for tf, bars in config]
+        for fut in futures:
+            tf, view = fut.result()
+            views[tf] = view
 
     weighted = sum(_score(views.get(tf, {})) * WEIGHTS.get(tf, 0) for tf in WEIGHTS)
     alignment_score = round(weighted * 100, 1)

@@ -652,7 +652,9 @@ def main() -> int:
         print("=" * 62)
         print("🧠 CryptoBrain — all-in-one dashboard")
         print(f"   open  http://localhost:{DASHBOARD_PORT}   (watch + click approve/reject)")
-        print("   other commands: scan | watch | backtest | learn | stats | coach | review | sources")
+        print("   everything runs from the dashboard — no commands needed")
+        print("   advanced/automation: scan | watch | analyze | backtest | learn | stats |")
+        print("                        coach | review | sources | state | glossary")
         print("=" * 62)
         serve(make_app(), DASHBOARD_HOST, DASHBOARD_PORT)
         return 0

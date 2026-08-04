@@ -239,14 +239,50 @@ def risk_regime(eq: dict, fng: dict, dom: dict) -> dict:
     return {"regime": regime, "score": score, "parts": parts}
 
 
+def _safe(fn, *a, **k) -> dict:
+    """Run a provider, returning {'available': False} on any failure."""
+    try:
+        val = fn(*a, **k)
+        return val if isinstance(val, dict) else {"available": False}
+    except Exception:
+        return {"available": False}
+
+
 def collect(price_1d: Optional[float] = None, sma200_1d: Optional[float] = None) -> dict:
-    """Gather the full market context (cached, best-effort)."""
-    fng = fear_greed()
-    dom = dominance()
-    eq = equities()
-    macro = macro_events()
+    """Gather the full market context (cached, best-effort, parallel).
+
+    All external providers run concurrently and are individually guarded, so
+    the whole context collection completes in roughly the time of the slowest
+    single provider (a few seconds), and never blocks the dashboard.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _news():
+        return _cached("news_headlines", lambda: fetch_news(limit=15), ttl=240)
+
+    jobs = {
+        "fng": lambda: _safe(fear_greed),
+        "dom": lambda: _safe(dominance),
+        "eq": lambda: _safe(equities),
+        "macro": lambda: _safe(macro_events),
+        "news": _news,
+    }
+    results: dict = {}
+    with ThreadPoolExecutor(max_workers=len(jobs)) as ex:
+        futs = {ex.submit(fn): name for name, fn in jobs.items()}
+        for name, fut in ((futs[f], f) for f in list(futs)):
+            try:
+                results[name] = fut.result(timeout=15)
+            except Exception:
+                results[name] = {"available": False}
+
+    fng = results.get("fng") or {"available": False}
+    dom = results.get("dom") or {"available": False}
+    eq = results.get("eq") or {"available": False}
+    macro = results.get("macro") or {"available": False}
+    news = results.get("news") or {"headlines": []}
+    headlines = news.get("headlines", [])
     cyc = cycle(sma200_1d, price_1d)
-    headlines = fetch_news(limit=15).get("headlines", [])
     social = social_pulse(headlines)
     geo = geopolitics(headlines)
     regime = risk_regime(eq, fng, dom)

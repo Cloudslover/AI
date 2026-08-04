@@ -15,6 +15,7 @@ All methods are read-only public endpoints — no API keys required.
 """
 from __future__ import annotations
 
+import threading
 import time
 from typing import Optional
 
@@ -37,9 +38,18 @@ class BinanceClient:
     def __init__(self, timeout: int = TIMEOUT, retries: int = _RETRIES):
         self.timeout = timeout
         self.retries = retries
-        self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "cryptobrain/1.0"})
+        # Thread-local sessions so parallel timeframe fetches are safe.
+        self._local = threading.local()
         self._futures_ok: Optional[bool] = None  # None = not yet tested
+
+    @property
+    def session(self) -> requests.Session:
+        s = getattr(self._local, "session", None)
+        if s is None:
+            s = requests.Session()
+            s.headers.update({"User-Agent": "cryptobrain/1.0"})
+            self._local.session = s
+        return s
 
     # ── helpers ──────────────────────────────────────────────────────────
     def _get(self, host: str, path: str, params: dict) -> Optional[dict]:

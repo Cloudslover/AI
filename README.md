@@ -90,8 +90,12 @@ Binance klines → add_all_indicators() → analyze_structure()
 # 1. install
 pip install -r requirements.txt
 
-# 2. ALL-IN-ONE DASHBOARD — watch everything + click to approve
+# 2. ALL-IN-ONE DASHBOARD — watch everything + click to decide (no commands needed)
 python main.py              # opens http://localhost:8050
+#    everything runs from the dashboard: live signal, chart, MTF, styles,
+#    context, approval queue, history, coach, and one-click
+#    "⚡ Learn now" / "▶ Quick backtest + learn" buttons.
+#    CLI is only for automation/advanced use.
 
 # 3. one-shot scan (live Binance data, no keys needed)
 python main.py scan --symbol BTCUSDT --tf 15m --json
@@ -365,6 +369,11 @@ CREATED ─▶ PENDING_REVIEW ─▶ APPROVED ─▶ EXECUTED ─▶ CLOSED (out
    structure event, style change), with per-style cooldowns (Scalp 15m …
    Position 24h) and a **whipsaw guard** that suppresses signals when the HTF
    flips too often. Memory persists in SQLite (`market_state` + `state_events`).
+
+**Performance:** all external fetches run in parallel with short timeouts and
+per-source degradation, so the first dashboard load is ~2-4s and refreshes are
+instant (cached). A 60s timeout guard + Retry button prevents the dashboard
+from ever hanging at "Loading…".
 
 ## 🧠 Self-improvement — the closed learning loop
 

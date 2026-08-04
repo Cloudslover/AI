@@ -7,6 +7,7 @@ never depends on news being available.
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -59,9 +60,11 @@ def _sentiment(text: str) -> str:
 
 
 def fetch_news(limit: int = 20) -> dict:
-    items: list[dict] = []
-    for feed in FEEDS:
-        items += _feed_items(feed)
+    # Fetch all feeds in parallel so a slow feed can't block the dashboard.
+    with ThreadPoolExecutor(max_workers=len(FEEDS)) as ex:
+        items: list[dict] = [
+            it for lst in ex.map(lambda u: _feed_items(u, timeout=6), FEEDS) for it in lst
+        ]
     for it in items:
         it["sentiment"] = _sentiment(it["title"])
     items = items[:limit]
