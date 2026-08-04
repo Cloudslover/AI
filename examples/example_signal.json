@@ -1,0 +1,342 @@
+{
+  "signal": {
+    "signal_id": "BTCUSDT_20260804_0655",
+    "timestamp": 1785826503343,
+    "asset": "BTCUSDT",
+    "action": "SELL",
+    "entry": 63669.99,
+    "stop_loss": 63861.0,
+    "take_profit": 63287.97,
+    "risk_reward": 2.5,
+    "confidence": "MEDIUM",
+    "timeframe": "15m",
+    "reason": "price below VWAP + Buyside liquidity swept + sellside targets below + Momentum aligned (RSI<50, MACD histogram falling)",
+    "signal_type": "SIGNAL",
+    "note": "Risk advice only \u2014 not financial advice. Use stop-losses."
+  },
+  "plans": [
+    {
+      "id": "reversal_sell",
+      "type": "Sweep Reversal Sell",
+      "action": "SELL",
+      "condition": "IF buyside liquidity was swept at 64023.61 AND price shows bearish CHOCH / rejection",
+      "trigger_level": 64023.61,
+      "entry": 63669.99,
+      "stop_loss": 63861.0,
+      "take_profits": [
+        63287.97,
+        63096.96
+      ],
+      "risk_reward": 2.5,
+      "confidence": 62,
+      "confidence_label": "MEDIUM",
+      "reasons": [
+        "Buyside liquidity swept + sellside targets below",
+        "Momentum aligned (RSI<50, MACD histogram falling)",
+        "Buyside stop hunt detected"
+      ],
+      "status": "active"
+    },
+    {
+      "id": "breakout_buy",
+      "type": "Breakout Buy",
+      "action": "BUY",
+      "condition": "IF a candle CLOSES above swing high 64,243.81 (BOS confirmation) with volume",
+      "trigger_level": 64243.81,
+      "entry": 64275.93,
+      "stop_loss": 64051.08,
+      "take_profits": [
+        64725.63,
+        64950.48
+      ],
+      "risk_reward": 2.5,
+      "confidence": 60,
+      "confidence_label": "MEDIUM",
+      "reasons": [
+        "Bullish structure (choch_up)",
+        "Breakout above 64,243.81",
+        "requires close + volume confirmation"
+      ],
+      "status": "waiting"
+    },
+    {
+      "id": "sell_pullback",
+      "type": "Sell Pullback",
+      "action": "SELL",
+      "condition": "IF price rallies to unfilled bearish FVG near 63,761.00 AND shows rejection (bearish candle)",
+      "trigger_level": 63761.0,
+      "entry": 63761.0,
+      "stop_loss": 63952.28,
+      "take_profits": [
+        63378.44,
+        62992.49
+      ],
+      "risk_reward": 3.01,
+      "confidence": 56,
+      "confidence_label": "LOW",
+      "reasons": [
+        "Buyside liquidity swept + sellside targets below",
+        "Momentum aligned (RSI<50, MACD histogram falling)",
+        "Pullback target = unfilled bearish FVG"
+      ],
+      "status": "waiting"
+    }
+  ],
+  "snapshot": {
+    "features": {
+      "symbol": "BTCUSDT",
+      "timeframe": "15m",
+      "price": 63669.99,
+      "bar_ts": 1785825900000,
+      "trend": "mixed",
+      "ema_alignment_bull": false,
+      "ema_alignment_bear": false,
+      "supertrend_bull": false,
+      "adx": 18.3,
+      "adx_strong": false,
+      "plus_di": 26.4,
+      "minus_di": 26.6,
+      "rsi": 44.7,
+      "rsi_prev": 46.5,
+      "rsi_overbought": false,
+      "rsi_oversold": false,
+      "rsi_bullish": false,
+      "macd_hist": -26.5263,
+      "macd_hist_rising": false,
+      "macd_bull_cross": false,
+      "macd_bear_cross": false,
+      "wt1": -9.29,
+      "wt2": 4.31,
+      "wt_bull": false,
+      "wt_overbought": false,
+      "wt_oversold": false,
+      "stoch_k": 10.5,
+      "roc": -0.26,
+      "rsi_divergence": {
+        "bull": 0,
+        "bear": 0,
+        "bull_price_low": null,
+        "bear_price_high": null
+      },
+      "atr": 116.87,
+      "atr_pct": 0.184,
+      "bb_width_pct": 0.62,
+      "bb_compress": false,
+      "volume_ratio": 0.46,
+      "volume_spike": false,
+      "volume_above_avg": false,
+      "above_vwap": false,
+      "vwap": 63750.13,
+      "poc": null,
+      "obv_slope": -631.3,
+      "delta": -36.01,
+      "close_vs_vwap_pct": -0.13,
+      "event_kind": "choch_up",
+      "event_age": 308,
+      "trend_bias": "bullish",
+      "swing_high": 64243.81,
+      "swing_low": 63762.0,
+      "nearest_bull_ob": null,
+      "nearest_bear_ob": null,
+      "nearest_bull_fvg": 63574.71,
+      "nearest_bear_fvg": 63761.0,
+      "fvg_bull_count": 4,
+      "fvg_bear_count": 2,
+      "premium_discount": "premium",
+      "premium_discount_position": 0.705,
+      "liquidity_above": [
+        64243.81,
+        64080.0,
+        64059.75,
+        64023.61,
+        64000.0,
+        63992.71
+      ],
+      "liquidity_below": [
+        63649.0,
+        63646.59,
+        63465.43,
+        63415.26,
+        63392.01,
+        63344.0
+      ],
+      "equal_highs": [
+        62867.84,
+        63893.994999999995,
+        63976.174999999996,
+        64054.45333333333
+      ],
+      "equal_lows": [
+        62566.54,
+        62768.67,
+        63357.01,
+        63660.676666666666,
+        63782.21666666667
+      ],
+      "sweep": {
+        "side": "buyside",
+        "level": 64023.61,
+        "recovered": true,
+        "bars_ago": 7
+      }
+    },
+    "structure": {
+      "trend_bias": "bullish",
+      "last_event": {
+        "kind": "choch_up",
+        "price": 64243.81,
+        "index": 191
+      },
+      "last_swing_high": 64243.81,
+      "last_swing_low": 63762.0,
+      "liquidity_above": [
+        64243.81,
+        64080.0,
+        64059.75,
+        64023.61,
+        64000.0,
+        63992.71
+      ],
+      "liquidity_below": [
+        63649.0,
+        63646.59,
+        63465.43,
+        63415.26,
+        63392.01,
+        63344.0
+      ],
+      "sweep": {
+        "side": "buyside",
+        "level": 64023.61,
+        "recovered": true,
+        "bars_ago": 7
+      },
+      "premium_discount": {
+        "top": 64243.81,
+        "bottom": 62300.0,
+        "position": 0.705,
+        "zone": "premium"
+      },
+      "equal_highs": [
+        62867.84,
+        63893.994999999995,
+        63976.174999999996,
+        64054.45333333333
+      ],
+      "equal_lows": [
+        62566.54,
+        62768.67,
+        63357.01,
+        63660.676666666666,
+        63782.21666666667
+      ],
+      "order_blocks": [
+        {
+          "side": "bearish",
+          "top": 63500.31,
+          "bottom": 63483.99,
+          "tested": true,
+          "broken": true
+        },
+        {
+          "side": "bullish",
+          "top": 63837.79,
+          "bottom": 63836.03,
+          "tested": true,
+          "broken": true
+        }
+      ],
+      "fvgs": [
+        {
+          "side": "bearish",
+          "top": 63807.35,
+          "bottom": 63792.0,
+          "filled": true
+        },
+        {
+          "side": "bullish",
+          "top": 63800.01,
+          "bottom": 63792.0,
+          "filled": true
+        },
+        {
+          "side": "bullish",
+          "top": 63834.01,
+          "bottom": 63827.84,
+          "filled": true
+        },
+        {
+          "side": "bullish",
+          "top": 64029.0,
+          "bottom": 63875.01,
+          "filled": true
+        },
+        {
+          "side": "bearish",
+          "top": 64029.0,
+          "bottom": 63890.0,
+          "filled": false
+        },
+        {
+          "side": "bearish",
+          "top": 63761.0,
+          "bottom": 63706.0,
+          "filled": false
+        }
+      ]
+    },
+    "scores": {
+      "bull": {
+        "score": 25,
+        "max_score": 100,
+        "confidence_pct": 25,
+        "confidence": "NO TRADE",
+        "conditions": {
+          "Trend": 0,
+          "Market structure": 15,
+          "OB/FVG": 5,
+          "Liquidity": 5,
+          "Volume": 0,
+          "RSI divergence": 0,
+          "Momentum": 0,
+          "Location": 0
+        },
+        "reasons": [
+          "Bullish structure (choch_up)"
+        ]
+      },
+      "bear": {
+        "score": 48,
+        "max_score": 100,
+        "confidence_pct": 48,
+        "confidence": "LOW",
+        "conditions": {
+          "Trend": 4,
+          "Market structure": 0,
+          "OB/FVG": 10,
+          "Liquidity": 15,
+          "Volume": 4,
+          "RSI divergence": 0,
+          "Momentum": 10,
+          "Location": 5
+        },
+        "reasons": [
+          "Buyside liquidity swept + sellside targets below",
+          "Momentum aligned (RSI<50, MACD histogram falling)"
+        ]
+      }
+    }
+  },
+  "market_context": {
+    "futures": false
+  },
+  "llm": {
+    "provider": "offline",
+    "narrative": "SELL BTCUSDT @ 63669.99 \u2014 confidence MEDIUM.\nSetup: price below VWAP + Buyside liquidity swept + sellside targets below + Momentum aligned (RSI<50, MACD histogram falling).\nTrend: mixed (EMA stack), ADX 18.3, Supertrend bear.\nRSI 44.7 \u2014 neutral.\nPrice sits in the premium zone of the dealing range.\nConditional setups to watch:\n  \u2022 [SELL] Sweep Reversal Sell (62%): IF buyside liquidity was swept at 64023.61 AND price shows bearish CHOCH / rejection\n  \u2022 [BUY] Breakout Buy (60%): IF a candle CLOSES above swing high 64,243.81 (BOS confirmation) with volume\n  \u2022 [SELL] Sell Pullback (56%): IF price rallies to unfilled bearish FVG near 63,761.00 AND shows rejection (bearish candle)\nBull score 25/100 \u00b7 Bear score 48/100.\nNot financial advice."
+  },
+  "validation": {
+    "ok": true,
+    "errors": [],
+    "warnings": []
+  }
+}

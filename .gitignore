@@ -1,0 +1,22 @@
+# secrets
+.env
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# data caches (keep the committed sample)
+data_samples/*.csv
+!data_samples/btcusdt_15m_sample.csv
+
+# tooling
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# os
+.DS_Store

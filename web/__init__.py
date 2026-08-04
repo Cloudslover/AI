@@ -1,0 +1,1 @@
+"""web package: Flask dashboard."""

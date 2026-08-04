@@ -1,0 +1,19 @@
+# Core
+numpy>=1.26
+pandas>=2.0
+requests>=2.31
+
+# CLI + web dashboard
+flask>=3.0
+python-dotenv>=1.0
+
+# Testing
+pytest>=8.0
+
+# Optional (CryptoDada website scraping) — install only if you want the scraper:
+# playwright>=1.40
+# then run:  playwright install chromium
+
+# Optional (LLM narrative in the AI Brain) — pick the provider you use:
+# openai>=1.30            # OpenAI-compatible endpoints (also works with Groq)
+# google-generativeai     # Gemini fallback
