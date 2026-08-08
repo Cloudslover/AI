@@ -6,6 +6,7 @@ Usage:
   python main.py scan --symbols BTCUSDT,ETHUSDT,SOLUSDT
   python main.py watch --symbol BTCUSDT --interval 120      # continuous loop
   python main.py web                                         # dashboard
+  python main.py paper --watch                               # live-market paper monitor
   python main.py sources                                     # CryptoDada + Discord + news
 """
 from __future__ import annotations
@@ -20,7 +21,7 @@ from typing import Optional
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from config import (SYMBOL, TIMEFRAME, BARS, MIN_CONFIDENCE, DEFAULT_RISK_REWARD,
-                    DASHBOARD_HOST, DASHBOARD_PORT, VERSION)
+                    DASHBOARD_HOST, DASHBOARD_PORT, PAPER_POLL_SECONDS, VERSION)
 
 from data.binance_client import BinanceClient
 from engine.signal_engine import analyze_frame
@@ -291,6 +292,75 @@ def cmd_close(args) -> int:
     return _decide(args, "CLOSED")
 
 
+def _print_paper_run(result: dict) -> None:
+    """Human-readable summary for one safe paper-monitoring pass."""
+    print("=" * 72)
+    print("PAPER TRADING RUNNER — public market data only; no exchange orders")
+    print(f"  enrolled {result.get('enrolled', 0)} | checked {result.get('checked', 0)} | "
+          f"entries {result.get('opened', 0)} | closed {result.get('closed', 0)} | "
+          f"cancelled {result.get('cancelled', 0)}")
+    for event in result.get("events", []):
+        extra = event.get("reason", "")
+        if event.get("outcome"):
+            extra = f"{event['outcome']} {event.get('rr_achieved', 0):+.2f}R — {extra}"
+        if event.get("price") is not None:
+            extra = f"@ {event['price']:,.8g} — {extra}"
+        print(f"  #{event.get('trade_id', '?'):<4} {event.get('symbol', '?'):<10} "
+              f"{event.get('action', '?'):<4} {event.get('event', '?'):<14} {extra}")
+    for error in result.get("errors", []):
+        print(f"  [!] {error.get('symbol', 'paper')} #{error.get('trade_id', error.get('scan_id', '?'))}: "
+              f"{error.get('error')}", file=sys.stderr)
+
+
+def cmd_paper(args) -> int:
+    """Run the approved-signal paper monitor once, or keep it running."""
+    from data.database import SignalDB
+    from data.paper_trading import PaperTradingRunner
+
+    client = _client()
+    symbol = (args.symbol or "").upper() or None
+
+    def one_pass() -> dict:
+        with SignalDB() as db:
+            runner = PaperTradingRunner(db=db, client=client)
+            return runner.run_once(symbol=symbol, enroll=not args.no_enroll).as_dict()
+
+    if args.watch:
+        print(f"Paper runner watching {symbol or 'all approved symbols'} every "
+              f"{args.interval}s — Ctrl+C to stop")
+        try:
+            while True:
+                try:
+                    result = one_pass()
+                    if args.json:
+                        print(json.dumps(result, default=str))
+                    else:
+                        _print_paper_run(result)
+                except Exception as exc:  # keep unattended paper monitoring alive
+                    print(f"[!] paper runner pass failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+                time.sleep(max(10, args.interval))
+        except KeyboardInterrupt:
+            print("\nPaper runner stopped.")
+        return 0
+
+    try:
+        result = one_pass()
+    except Exception as exc:
+        print(f"[!] paper runner failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        _print_paper_run(result)
+        from data.database import SignalDB
+        with SignalDB() as db:
+            stats = db.paper_trade_stats(symbol)["overall"]
+        print(f"  total paper trades {stats['n']} | waiting {stats.get('waiting', 0)} | "
+              f"open {stats.get('open', 0)} | wins/losses {stats['wins']}/{stats['losses']} | "
+              f"avg R {stats['avg_rr']}")
+    return 0
+
+
 def cmd_signal(args) -> int:
     from data.database import SignalDB
     import json as _json
@@ -494,6 +564,7 @@ def cmd_stats(args) -> int:
         scans = db.latest_scans(args.symbol or None, limit=15)
         plan_stats = db.plan_stats()
         bt = db.backtest_stats()
+        paper = db.paper_trade_stats(args.symbol or None)
 
     print("=" * 66)
     print("SIGNAL DATABASE — learning store")
@@ -529,6 +600,17 @@ def cmd_stats(args) -> int:
                   f"{f'{wr*100:.1f}%' if wr is not None else 'n/a'}  avgR {r['avg_rr']}")
     else:
         print("  none yet — run `python main.py backtest --save` to start learning.")
+
+    p = paper["overall"]
+    print("-" * 66)
+    print("PAPER trading (approved live-market simulations):")
+    if p["n"]:
+        wr = p["win_rate"]
+        print(f"  tracked {p['n']} | waiting {p.get('waiting', 0)} | open {p.get('open', 0)} | "
+              f"closed {p.get('closed', 0)} | win-rate "
+              f"{f'{wr*100:.1f}%' if wr is not None else 'n/a'} | avgR {p['avg_rr']}")
+    else:
+        print("  none yet — approve a signal, then run `python main.py paper --watch`.")
     return 0
 
 
@@ -566,6 +648,16 @@ def main() -> int:
     p_watch.add_argument("--auto-approve", action="store_true",
                         help="approve signals automatically (unattended mode)")
     p_watch.set_defaults(func=cmd_watch)
+
+    p_paper = sub.add_parser("paper", help="monitor approved paper trades; never sends exchange orders")
+    p_paper.add_argument("--symbol", default=None, help="optional symbol filter, e.g. BTCUSDT")
+    p_paper.add_argument("--watch", action="store_true", help="keep monitoring until Ctrl+C")
+    p_paper.add_argument("--interval", type=int, default=PAPER_POLL_SECONDS,
+                         help="seconds between checks in --watch mode")
+    p_paper.add_argument("--no-enroll", action="store_true",
+                         help="only check existing paper trades; do not enroll new approvals")
+    p_paper.add_argument("--json", action="store_true", help="machine-readable run summary")
+    p_paper.set_defaults(func=cmd_paper)
 
     p_src = sub.add_parser("sources", help="pull CryptoDada + Discord + news")
     p_src.set_defaults(func=cmd_sources)
@@ -653,7 +745,7 @@ def main() -> int:
         print(f"🧠 CryptoBrain v{VERSION} — all-in-one dashboard")
         print(f"   open  http://localhost:{DASHBOARD_PORT}   (watch + click approve/reject)")
         print("   everything runs from the dashboard — no commands needed")
-        print("   advanced/automation: scan | watch | analyze | backtest | learn | stats |")
+        print("   advanced/automation: scan | watch | paper | analyze | backtest | learn | stats |")
         print("                        coach | review | sources | state | glossary")
         print("=" * 62)
         serve(make_app(), DASHBOARD_HOST, DASHBOARD_PORT)

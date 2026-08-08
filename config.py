@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-VERSION = "1.7.3"
+VERSION = "1.8.0"
 
 ROOT = Path(__file__).parent
 
@@ -58,6 +58,12 @@ DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "8050"))
 
 # ── Signal database (learning store) ─────────────────────────────────────
 DB_PATH = os.getenv("DB_PATH", str(ROOT / "data" / "cryptobrain.db"))
+
+# ── Paper-trading runner (simulation only — never places exchange orders) ─
+# The runner reads public OHLCV candles to fill approved paper trades and
+# closes them at their planned SL / first TP.  Use `python main.py paper --watch`.
+PAPER_POLL_SECONDS = int(os.getenv("PAPER_POLL_SECONDS", "30"))
+PAPER_MAX_CANDLES_PER_CHECK = int(os.getenv("PAPER_MAX_CANDLES_PER_CHECK", "1000"))
 
 # ── Backtester ───────────────────────────────────────────────────────────
 BACKTEST_HORIZONS = [float(h) for h in os.getenv("BACKTEST_HORIZONS", "1,4,24").split(",")]

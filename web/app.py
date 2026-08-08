@@ -21,6 +21,8 @@ Endpoints
   GET /api/history  recent scans with lifecycle status
   GET /api/signal   full detail + plans + decision trail for one scan
   GET /api/learning backtest stats + calibration profile + plan distribution
+  GET /api/paper    paper-trade state, outcomes, and runner statistics
+  POST /api/paper/run  enroll/check approved paper trades once
   GET /api/coach    explain + mentor + personal feedback
   GET /api/health   health check
 """
@@ -408,6 +410,7 @@ function render(d){
     </div>
     <div id="diag" class="note" style="margin-top:6px"></div>`);
   html += card('HUMAN APPROVAL QUEUE', '<div id="queue">loading…</div>');
+  html += card('PAPER TRADING — LIVE OUTCOME RUNNER', '<div id="paper">loading…</div>', true);
   html += card('RECENT SIGNALS', '<div id="hist">loading…</div>');
   html += card('LEARNING — backtest & calibration', '<div id="learn">loading…</div>', true);
   html += card('🧑‍🏫 COACH', `<button class="rowbtn" onclick="coach()">Explain & mentor me</button>
@@ -416,7 +419,7 @@ function render(d){
   html += card('RAW JSON', `<details><summary>show</summary><pre style="max-height:380px;overflow:auto;font-size:11px">${esc(JSON.stringify(d,null,2))}</pre></details>`);
 
   document.getElementById('app').innerHTML = html;
-  loadPending(); loadHistory(); loadLearning(); loadSources();
+  loadPending(); loadPaper(); loadHistory(); loadLearning(); loadSources();
   const symE=document.getElementById('sym'); const tfE=document.getElementById('tf');
   loadChart((symE?symE.value:'BTCUSDT').toUpperCase(), tfE?tfE.value:'15m');
 }
@@ -537,6 +540,37 @@ async function loadPending(){
   }catch(e){ const el=document.getElementById('queue'); if(el) el.innerHTML='<span class="err">'+esc(e)+'</span>'; }
 }
 
+async function loadPaper(){
+  try{
+    const d=await (await fetch('/api/paper')).json();
+    const el=document.getElementById('paper'); if(!el) return;
+    const o=(d.stats||{}).overall||{}, recent=(d.stats||{}).recent||[];
+    const wr=o.win_rate!=null?(o.win_rate*100).toFixed(1)+'%':'n/a';
+    const rows=recent.slice(0,6).map(t=>`<tr>
+      <td>#${t.id} <b>${esc(t.symbol||'')}</b> ${esc(t.action||'')}</td>
+      <td>${esc(t.plan_type||'Signal')}</td><td>${esc(t.status||'')}</td>
+      <td>${esc(t.outcome||'—')}</td><td>${t.rr_achieved!=null?(+t.rr_achieved).toFixed(2)+'R':'—'}</td>
+      <td class="note">${esc(t.close_reason||'')}</td></tr>`).join('');
+    el.innerHTML=`<div class="flex" style="margin-bottom:8px">
+      <button class="rowbtn" onclick="runPaper()">▶ Check approved paper trades now</button>
+      <span id="papermsg" class="note"></span></div>
+      <div class="kv"><b>Tracked</b><span>${o.n||0}</span><b>Waiting entry</b><span>${o.waiting||0}</span>
+      <b>Open</b><span>${o.open||0}</span><b>Closed</b><span>${o.closed||0}</span>
+      <b>Win-rate</b><span>${wr}</span><b>Avg R</b><span>${o.avg_rr??0}</span></div>
+      <div class="note" style="margin-top:8px">Paper only: public Binance candles, no API key and no real exchange order. Start <code>python main.py paper --watch</code> for unattended monitoring.</div>
+      ${rows?`<table style="margin-top:8px"><tr><th>Trade</th><th>Setup</th><th>Status</th><th>Outcome</th><th>R</th><th>Note</th></tr>${rows}</table>`:'<div class="muted" style="margin-top:8px">Approve a signal, then check it here or start the paper runner.</div>'}`;
+  }catch(e){ const el=document.getElementById('paper'); if(el) el.innerHTML='<span class="err">'+esc(e)+'</span>'; }
+}
+
+async function runPaper(){
+  const m=document.getElementById('papermsg'); if(m) m.textContent='checking live candles…';
+  try{
+    const d=await (await fetch('/api/paper/run',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).json();
+    if(m) m.textContent=d.ok?`✓ checked ${d.run.checked||0}; entries ${d.run.opened||0}; closed ${d.run.closed||0}`:'error: '+(d.error||'');
+  }catch(e){ if(m) m.textContent='error: '+e; }
+  loadPaper(); loadHistory(); loadPending(); loadLearning();
+}
+
 async function loadHistory(){
   try{
     const d=await (await fetch('/api/history')).json();
@@ -638,13 +672,13 @@ async function decide(id, decision, note){
   closeModal();
   // quiet refresh — no 'Scanning…' restart feel; just updates in place
   await load(true, true);
-  loadPending(); loadHistory(); loadLearning();
+  loadPending(); loadPaper(); loadHistory(); loadLearning();
 }
 
 async function openModal(id){
   try{
     const d=await (await fetch('/api/signal?id='+id)).json();
-    const s=d.scan||{}, plans=(Array.isArray(d.plans)?d.plans:[]), decs=(Array.isArray(d.decisions)?d.decisions:[]);
+    const s=d.scan||{}, plans=(Array.isArray(d.plans)?d.plans:[]), decs=(Array.isArray(d.decisions)?d.decisions:[]), paper=d.paper_trade||{};
     const tps=p=>{ try{ return (p.take_profits||[]).map(fmt).join(', '); }catch(e){ return '—'; } };
     document.getElementById('mbody').innerHTML=`
       <div class="flex" style="justify-content:space-between"><h2 style="margin:0">Signal #${s.id} — ${esc(s.symbol||'')} ${esc(s.timeframe||'')} <span class="pill ${cls(s.action)}">${esc(s.action||'')}</span></h2>
@@ -655,6 +689,11 @@ async function openModal(id){
         <b>TP</b><span class="mono">${fmt(s.take_profit)}</span><b>RR</b><span>${s.risk_reward??'—'}</span>
         <b>Created</b><span>${esc(s.created_at||'—')}</span><b>Reason</b><span>${esc(s.reason||'')}</span>
       </div>
+      ${paper.id?`<h3 style="margin:14px 0 6px">Paper-trade monitor</h3><div class="kv">
+        <b>Status</b><span>${esc(paper.status||'—')}</span><b>Setup</b><span>${esc(paper.plan_type||'Signal')}</span>
+        <b>Outcome</b><span>${esc(paper.outcome||'—')}</span><b>R achieved</b><span>${paper.rr_achieved!=null?paper.rr_achieved+'R':'—'}</span>
+        <b>Last price</b><span class="mono">${fmt(paper.last_price)}</span><b>Note</b><span>${esc(paper.close_reason||'')}</span>
+      </div>`:''}
       <h3 style="margin:14px 0 6px">Lifecycle trail</h3>
       ${decs.length?decs.map(x=>`<div class="muted">${esc(x.from_state||'')} → <b>${esc(x.to_state||'')}</b> by ${esc(x.reviewer||'')} <span class="note">${esc(x.note||'')}</span></div>`).join(''):'<span class="muted">no decisions yet</span>'}
       <h3 style="margin:14px 0 6px">Plans</h3>
@@ -714,6 +753,33 @@ def make_app() -> Flask:
         with SignalDB() as db:
             return jsonify({"pending": db.pending_reviews()})
 
+    @app.get("/api/paper")
+    def api_paper():
+        """Paper-monitor dashboard state. Read-only; does not start a runner."""
+        symbol = (request.args.get("symbol") or "").upper() or None
+        from data.database import SignalDB
+        with SignalDB() as db:
+            return jsonify({"stats": db.paper_trade_stats(symbol)})
+
+    @app.post("/api/paper/run")
+    def api_paper_run():
+        """One explicit, safe runner pass for the dashboard button.
+
+        Continuous unattended monitoring belongs to ``python main.py paper
+        --watch`` so it survives a browser tab closing.  This endpoint never
+        sends an order to an exchange.
+        """
+        body = request.get_json(silent=True) or {}
+        symbol = (body.get("symbol") or "").upper() or None
+        try:
+            from data.database import SignalDB
+            from data.paper_trading import PaperTradingRunner
+            with SignalDB() as db:
+                run = PaperTradingRunner(db=db, client=BinanceClient()).run_once(symbol=symbol).as_dict()
+            return jsonify({"ok": True, "run": run})
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 500
+
     @app.post("/api/review")
     def api_review():
         body = request.get_json(silent=True) or {}
@@ -750,7 +816,9 @@ def make_app() -> Flask:
                 return jsonify({"error": "not found"}), 404
             plans = json.loads(scan.get("plans_json") or "[]")
             decisions = db.decision_history(scan_id)
-        return jsonify({"scan": scan, "plans": plans, "decisions": decisions})
+            paper_trade = db.paper_trade_for_scan(scan_id)
+        return jsonify({"scan": scan, "plans": plans, "decisions": decisions,
+                        "paper_trade": paper_trade})
 
     @app.get("/api/learning")
     def api_learning():

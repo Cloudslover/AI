@@ -84,10 +84,21 @@ class BinanceClient:
 
     # ── OHLCV ────────────────────────────────────────────────────────────
     def klines(self, symbol: str = "BTCUSDT", timeframe: str = "15m",
-               limit: int = 500) -> pd.DataFrame:
-        """Fetch OHLCV candles. Returns a DataFrame with columns
-        ts, open, high, low, close, volume (closed candles only)."""
-        params = {"symbol": symbol, "interval": timeframe, "limit": limit}
+               limit: int = 500, start_time: Optional[int] = None,
+               end_time: Optional[int] = None) -> pd.DataFrame:
+        """Fetch OHLCV candles.
+
+        ``start_time`` / ``end_time`` are optional Unix timestamps in
+        milliseconds.  They let the paper-trading runner resume from its last
+        inspected candle instead of repeatedly treating all historical data as
+        new.  The returned frame retains the standard columns ``ts, open,
+        high, low, close, volume``.
+        """
+        params = {"symbol": symbol, "interval": timeframe, "limit": min(max(1, int(limit)), 1000)}
+        if start_time is not None:
+            params["startTime"] = int(start_time)
+        if end_time is not None:
+            params["endTime"] = int(end_time)
         data = self._get_first_host(BINANCE_HOSTS, "/api/v3/klines", params)
         if data is None:
             raise ConnectionError(

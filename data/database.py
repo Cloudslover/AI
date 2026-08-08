@@ -7,9 +7,10 @@ Tables
 scans            : one row per engine run (signal + reason + feature snapshot)
 plans            : the conditional plans each scan produced
 backtest_results : per-plan outcomes from the walk-forward backtester
+paper_trades     : approved live-market paper simulations and their outcomes
 
-The point of this store: accumulate every scan and every graded backtest
-outcome, then answer questions like
+The point of this store: accumulate every scan, historical grade, and approved
+paper-trade outcome, then answer questions like
   * "Which plan types actually win most often?"
   * "Does confidence >= 80 beat confidence 55-60?"
   * "Do BUY setups on the 15m beat SELL setups?"
@@ -68,10 +69,28 @@ CREATE TABLE IF NOT EXISTS calibration(
   multiplier REAL, expectancy REAL, samples INTEGER,
   updated_at INTEGER
 );
+CREATE TABLE IF NOT EXISTS paper_trades(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scan_id INTEGER NOT NULL UNIQUE,
+  signal_id TEXT, plan_id TEXT, plan_type TEXT,
+  symbol TEXT, timeframe TEXT, action TEXT,
+  entry REAL, stop_loss REAL, take_profit REAL,
+  risk_reward REAL, confidence_pct INTEGER,
+  status TEXT NOT NULL DEFAULT 'WAITING_ENTRY',
+  created_ts INTEGER, opened_ts INTEGER, closed_ts INTEGER,
+  entry_price REAL, exit_price REAL,
+  outcome TEXT, rr_achieved REAL, close_reason TEXT,
+  last_candle_ts INTEGER, last_price REAL, checks INTEGER DEFAULT 0,
+  error TEXT,
+  FOREIGN KEY(scan_id) REFERENCES scans(id)
+);
 CREATE INDEX IF NOT EXISTS idx_plans_scan ON plans(scan_id);
 CREATE INDEX IF NOT EXISTS idx_bt_type ON backtest_results(plan_type);
 CREATE INDEX IF NOT EXISTS idx_bt_outcome ON backtest_results(outcome);
 CREATE INDEX IF NOT EXISTS idx_decisions_scan ON decisions(scan_id);
+CREATE INDEX IF NOT EXISTS idx_paper_scan ON paper_trades(scan_id);
+CREATE INDEX IF NOT EXISTS idx_paper_status ON paper_trades(status);
+CREATE INDEX IF NOT EXISTS idx_paper_symbol ON paper_trades(symbol);
 """
 
 
@@ -152,6 +171,163 @@ class SignalDB:
     def get_scan(self, scan_id: int) -> Optional[dict]:
         row = self.conn.execute("SELECT * FROM scans WHERE id=?", (scan_id,)).fetchone()
         return dict(row) if row else None
+
+    # ── paper trades (live-market simulation; no exchange orders) ────────
+    def paper_candidates(self, symbol: str | None = None) -> list[dict]:
+        """Approved/executed scans that have not yet entered the paper runner."""
+        q = """SELECT s.* FROM scans s
+               LEFT JOIN paper_trades p ON p.scan_id=s.id
+               WHERE p.id IS NULL AND s.status IN ('APPROVED','EXECUTED')
+                 AND s.action IN ('BUY','SELL')"""
+        args: tuple = ()
+        if symbol:
+            q += " AND s.symbol=?"
+            args = (symbol,)
+        q += " ORDER BY s.lifecycle_ts ASC, s.id ASC"
+        return [dict(r) for r in self.conn.execute(q, args).fetchall()]
+
+    def get_paper_trade(self, trade_id: int) -> Optional[dict]:
+        row = self.conn.execute("SELECT * FROM paper_trades WHERE id=?", (trade_id,)).fetchone()
+        return dict(row) if row else None
+
+    def paper_trade_for_scan(self, scan_id: int) -> Optional[dict]:
+        row = self.conn.execute("SELECT * FROM paper_trades WHERE scan_id=?", (scan_id,)).fetchone()
+        return dict(row) if row else None
+
+    def create_paper_trade(self, fields: dict) -> tuple[dict, bool]:
+        """Insert one simulated trade once. Returns ``(row, created)``.
+
+        ``scan_id`` is unique, which makes repeated runner passes and two
+        accidentally-started runner processes idempotent.
+        """
+        cols = (
+            "scan_id", "signal_id", "plan_id", "plan_type", "symbol", "timeframe", "action",
+            "entry", "stop_loss", "take_profit", "risk_reward", "confidence_pct", "status",
+            "created_ts", "opened_ts", "entry_price",
+        )
+        values = tuple(fields.get(c) for c in cols)
+        cur = self.conn.execute(
+            f"INSERT OR IGNORE INTO paper_trades ({','.join(cols)}) VALUES ({','.join('?' for _ in cols)})",
+            values,
+        )
+        self.conn.commit()
+        row = self.paper_trade_for_scan(int(fields["scan_id"]))
+        if row is None:  # pragma: no cover - protects a malformed DB only
+            raise RuntimeError("paper trade insert did not return a row")
+        return row, bool(cur.rowcount)
+
+    def active_paper_trades(self, symbol: str | None = None) -> list[dict]:
+        q = "SELECT * FROM paper_trades WHERE status IN ('WAITING_ENTRY','OPEN')"
+        args: tuple = ()
+        if symbol:
+            q += " AND symbol=?"
+            args = (symbol,)
+        q += " ORDER BY created_ts ASC, id ASC"
+        return [dict(r) for r in self.conn.execute(q, args).fetchall()]
+
+    def open_paper_trade(self, trade_id: int, entry_price: float, opened_ts: int,
+                         last_candle_ts: int | None = None,
+                         last_price: float | None = None) -> bool:
+        """Claim a waiting conditional trade as filled. Returns True once."""
+        cur = self.conn.execute(
+            """UPDATE paper_trades
+               SET status='OPEN', opened_ts=?, entry_price=?, last_candle_ts=?,
+                   last_price=?, checks=checks+1
+               WHERE id=? AND status='WAITING_ENTRY'""",
+            (opened_ts, entry_price, last_candle_ts, last_price, trade_id),
+        )
+        self.conn.commit()
+        return bool(cur.rowcount)
+
+    def close_paper_trade(self, trade_id: int, outcome: str, exit_price: float,
+                          rr_achieved: float, close_reason: str, closed_ts: int,
+                          last_candle_ts: int | None = None,
+                          last_price: float | None = None) -> bool:
+        """Atomically close an active paper trade; only one runner can win."""
+        cur = self.conn.execute(
+            """UPDATE paper_trades
+               SET status='CLOSED', outcome=?, exit_price=?, rr_achieved=?,
+                   close_reason=?, closed_ts=?, last_candle_ts=?, last_price=?,
+                   checks=checks+1
+               WHERE id=? AND status IN ('WAITING_ENTRY','OPEN')""",
+            (outcome, exit_price, rr_achieved, close_reason, closed_ts,
+             last_candle_ts, last_price, trade_id),
+        )
+        self.conn.commit()
+        return bool(cur.rowcount)
+
+    def cancel_paper_trade(self, trade_id: int, reason: str, closed_ts: int) -> bool:
+        """Cancel an unfinished simulation when a human ends its source scan."""
+        cur = self.conn.execute(
+            """UPDATE paper_trades
+               SET status='CANCELLED', close_reason=?, closed_ts=?
+               WHERE id=? AND status IN ('WAITING_ENTRY','OPEN')""",
+            (reason, closed_ts, trade_id),
+        )
+        self.conn.commit()
+        return bool(cur.rowcount)
+
+    def touch_paper_trade(self, trade_id: int, last_candle_ts: int | None = None,
+                          last_price: float | None = None,
+                          checked_ts: int | None = None) -> None:
+        """Persist the runner cursor/last seen price after a non-decisive pass."""
+        # ``checked_ts`` is intentionally not a schema column: checks is the
+        # durable audit counter while the candle cursor is what resumes safely.
+        _ = checked_ts
+        self.conn.execute(
+            """UPDATE paper_trades
+               SET last_candle_ts=COALESCE(?, last_candle_ts),
+                   last_price=COALESCE(?, last_price), checks=checks+1
+               WHERE id=? AND status IN ('WAITING_ENTRY','OPEN')""",
+            (last_candle_ts, last_price, trade_id),
+        )
+        self.conn.commit()
+
+    @staticmethod
+    def _outcome_stats(rows: list[dict]) -> dict:
+        """Normalise paper outcome aggregates in one place."""
+        if not rows:
+            return {"n": 0, "wins": 0, "losses": 0, "win_rate": None, "avg_rr": 0.0}
+        row = rows[0]
+        n = row.get("n") or 0
+        wins, losses = row.get("wins") or 0, row.get("losses") or 0
+        decided = wins + losses
+        counts = {k: row.get(k) or 0 for k in ("waiting", "open", "closed", "cancelled")}
+        return {
+            **row, **counts, "n": n, "wins": wins, "losses": losses,
+            "win_rate": round(wins / decided, 3) if decided else None,
+            "avg_rr": row.get("avg_rr") or 0.0,
+        }
+
+    def paper_trade_stats(self, symbol: str | None = None, limit: int = 12) -> dict:
+        """Paper-runner dashboard/CLI stats, kept separate from backtests."""
+        where = ""
+        args: tuple = ()
+        if symbol:
+            where = " WHERE symbol=?"
+            args = (symbol,)
+        overall = self._outcome_stats([dict(self.conn.execute(
+            f"""SELECT COUNT(*) n,
+                       SUM(CASE WHEN status='WAITING_ENTRY' THEN 1 ELSE 0 END) waiting,
+                       SUM(CASE WHEN status='OPEN' THEN 1 ELSE 0 END) open,
+                       SUM(CASE WHEN status='CLOSED' THEN 1 ELSE 0 END) closed,
+                       SUM(CASE WHEN status='CANCELLED' THEN 1 ELSE 0 END) cancelled,
+                       SUM(CASE WHEN outcome='TP_HIT' THEN 1 ELSE 0 END) wins,
+                       SUM(CASE WHEN outcome='STOP_LOSS' THEN 1 ELSE 0 END) losses,
+                       ROUND(AVG(CASE WHEN outcome IN ('TP_HIT','STOP_LOSS') THEN rr_achieved END), 3) avg_rr
+                FROM paper_trades{where}""", args).fetchone())])
+        by_type = [dict(r) for r in self.conn.execute(
+            f"""SELECT plan_type, COUNT(*) n,
+                       SUM(CASE WHEN outcome='TP_HIT' THEN 1 ELSE 0 END) wins,
+                       SUM(CASE WHEN outcome='STOP_LOSS' THEN 1 ELSE 0 END) losses,
+                       ROUND(AVG(CASE WHEN outcome IN ('TP_HIT','STOP_LOSS') THEN rr_achieved END), 3) avg_rr
+                FROM paper_trades{where}
+                GROUP BY plan_type ORDER BY n DESC""", args).fetchall()]
+        by_type = [self._outcome_stats([r]) for r in by_type]
+        recent = [dict(r) for r in self.conn.execute(
+            f"SELECT * FROM paper_trades{where} ORDER BY COALESCE(closed_ts, opened_ts, created_ts) DESC LIMIT ?",
+            args + (max(1, min(int(limit), 50)),)).fetchall()]
+        return {"overall": overall, "by_type": by_type, "recent": recent}
 
     # ── calibration (self-improvement profile) ───────────────────────────
     def save_calibration(self, profile: dict) -> None:
