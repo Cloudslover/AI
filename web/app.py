@@ -179,10 +179,10 @@ def build_payload(symbol: str, tf: str) -> dict:
     return compute_payload(symbol, tf, save=True, use_cache=True)
 
 
-# Raw string on purpose: backslash escapes inside the embedded JavaScript
-# (e.g. '\n') must reach the browser verbatim — a normal Python string would
-# convert them to real newlines and break the JS with a SyntaxError.
-HTML = r"""<!doctype html>
+# Keep this a normal triple-quoted string so the lightweight CI extractor can
+# read it directly. Embedded JavaScript deliberately uses `nl` below instead
+# of a `\n` string escape, which stays correct without a raw Python literal.
+HTML = """<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CryptoBrain — All-in-One</title>
@@ -716,7 +716,8 @@ async function coach(){
   const tf=document.getElementById('tf').value;
   try{
     const d=await (await fetch(`/api/coach?symbol=${sym}&tf=${tf}`)).json();
-    el.textContent=(d.explain||[]).join('\n')+'\n\n'+d.mentor+'\n\n📈 YOUR FEEDBACK\n'+(d.feedback||[]).join('\n');
+    const nl=String.fromCharCode(10);
+    el.textContent=(d.explain||[]).join(nl)+nl+nl+d.mentor+nl+nl+'📈 YOUR FEEDBACK'+nl+(d.feedback||[]).join(nl);
   }catch(e){ el.textContent='Error: '+e; }
 }
 
