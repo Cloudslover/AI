@@ -1,8 +1,8 @@
 """brain/calibrator.py
 
-The self-improvement loop. After enough backtest outcomes (and, optionally,
-your own approved/rejected decisions) accumulate in the database, the
-calibrator computes a per-plan-type "calibration profile":
+The self-improvement loop. After enough historical backtest outcomes and
+approved live-market paper outcomes accumulate in the database, the calibrator
+computes a per-plan-type "calibration profile":
 
     multiplier = clamp(1 + expectancy * gain, min_mult, max_mult)
 
@@ -30,16 +30,33 @@ WIN_SET = {"FULL_WIN", "PARTIAL_WIN"}
 
 
 def compute_expectancy_by_type(db: SignalDB, horizons: Optional[list[float]] = None) -> dict:
-    """Expectancy (average R) per plan type from stored backtest outcomes."""
+    """Expectancy (average R) per plan type from backtests + paper outcomes."""
+    # Historical walk-forward grades and live-market paper outcomes are both
+    # useful evidence, but remain separate tables so the dashboard can show
+    # them honestly.  The calibration pass deliberately combines only decided
+    # outcomes: TP_HIT behaves like a win; STOP_LOSS behaves like a loss.
     rows = db.conn.execute(
-        """SELECT plan_type,
-                  COUNT(*) n,
-                  SUM(CASE WHEN outcome IN ('FULL_WIN','PARTIAL_WIN') THEN 1 ELSE 0 END) wins,
-                  SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) losses,
-                  AVG(rr_achieved) avg_rr
-           FROM backtest_results
-           WHERE outcome IN ('FULL_WIN','PARTIAL_WIN','LOSS')
-           GROUP BY plan_type"""
+        """WITH decided AS (
+                 SELECT plan_type, outcome, rr_achieved, 'backtest' AS source
+                 FROM backtest_results
+                 WHERE outcome IN ('FULL_WIN','PARTIAL_WIN','LOSS')
+                 UNION ALL
+                 SELECT plan_type,
+                        CASE outcome WHEN 'TP_HIT' THEN 'FULL_WIN'
+                                     WHEN 'STOP_LOSS' THEN 'LOSS' END AS outcome,
+                        rr_achieved, 'paper' AS source
+                 FROM paper_trades
+                 WHERE outcome IN ('TP_HIT','STOP_LOSS')
+             )
+             SELECT plan_type,
+                    COUNT(*) n,
+                    SUM(CASE WHEN outcome IN ('FULL_WIN','PARTIAL_WIN') THEN 1 ELSE 0 END) wins,
+                    SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) losses,
+                    SUM(CASE WHEN source='backtest' THEN 1 ELSE 0 END) backtest_samples,
+                    SUM(CASE WHEN source='paper' THEN 1 ELSE 0 END) paper_samples,
+                    AVG(rr_achieved) avg_rr
+             FROM decided
+             GROUP BY plan_type"""
     ).fetchall()
     out = {}
     for r in rows:
@@ -52,6 +69,8 @@ def compute_expectancy_by_type(db: SignalDB, horizons: Optional[list[float]] = N
             "n": n,
             "wins": wins,
             "losses": losses,
+            "backtest_samples": r["backtest_samples"] or 0,
+            "paper_samples": r["paper_samples"] or 0,
             "win_rate": round(wins / decided, 3) if decided else None,
             "expectancy": round(avg_rr, 3),
         }
@@ -60,7 +79,7 @@ def compute_expectancy_by_type(db: SignalDB, horizons: Optional[list[float]] = N
 
 def build_profile(db: SignalDB, filter_neg: bool = CALIBRATE_FILTER,
                   min_n: int = CALIBRATE_MIN_N) -> dict:
-    """Turn backtest stats into a calibration profile (plan_type -> params)."""
+    """Turn decided backtest/paper stats into a calibration profile."""
     stats = compute_expectancy_by_type(db)
     profile: dict = {}
     for plan_type, st in stats.items():

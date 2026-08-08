@@ -37,10 +37,11 @@ with connectors for your **private CryptoDada website** and **Discord group**.
 | **Backtester** | Walk-forward grading of every plan at +1h/+4h/+24h → win-rate, avg R, expectancy by plan type / confidence / action |
 | **Signal database** | SQLite learning store — every scan + every graded outcome, queried via `python main.py stats` |
 | **Human approval gate** | Every actionable signal enters `PENDING_REVIEW`; you approve/reject/execute/close it with one command (or the dashboard buttons). Full audit trail per signal. |
-| **Self-improvement** | `python main.py learn` recomputes a per-setup calibration profile from backtest outcomes — boosts positive-expectancy plans, dampens (or filters) negative ones. The engine literally gets better with every backtest. |
+| **Paper-trading runner** | Watches **approved** signals against live public Binance candles, simulates a planned entry, and auto-closes at SL / TP1. It records the outcome and R result — **never places a real exchange order**. |
+| **Self-improvement** | `python main.py learn` recomputes a per-setup calibration profile from backtest outcomes **plus decided paper trades** — boosts positive-expectancy plans, dampens (or filters) negative ones. |
 | **Coach (teaching)** | `python main.py coach` explains *why* the engine said what it said, mentors you through the top setup step-by-step, gives personal feedback on your own approvals/rejections, and ships a full trading glossary. |
 | **CI** | GitHub Actions runs the offline test suite on every push |
-| **Web dashboard** | **`python main.py`** opens the all-in-one dashboard: live signal + lifecycle badge, **candlestick chart**, **multi-timeframe table**, **what-the-market-offers styles grid**, **context panel** (news/macro/geopolitics/cycle/social/equities), **state memory panel** (signal stability), plans, feature snapshot, score breakdown, human approval queue, recent signals, learning dashboard, coach, LLM narrative — auto-refreshing. |
+| **Web dashboard** | **`python main.py`** opens the all-in-one dashboard: live signal + lifecycle badge, **candlestick chart**, **multi-timeframe table**, **what-the-market-offers styles grid**, **context panel** (news/macro/geopolitics/cycle/social/equities), **state memory panel** (signal stability), plans, human approval queue, a one-click **paper-trading runner** panel, recent signals, learning dashboard, coach, LLM narrative — auto-refreshing. |
 | **Human-like thinking** | **Multi-timeframe** (1d/4h/1h/15m/5m → HTF bias + LTF execution + alignment score), **full market context** (fear&greed, BTC dominance, S&P/Nasdaq/DXY, macro calendar FOMC/CPI/NFP, halving cycle, geopolitics, influencer/social pulse), **trading-style signals** (Scalp/Day/Swing/Momentum/Position — "what the market provides, we take"), and **state memory** so signals only change when the market state changes — no random 30s signals. |
 
 ---
@@ -117,23 +118,33 @@ python main.py review                # list signals awaiting approval
 python main.py approve 42 --note "clean setup"
 python main.py reject 42 --note "chasing entry"
 python main.py signal 42             # full detail + lifecycle trail
-python main.py execute 42            # mark approved trade as executed
-python main.py close 42              # record the outcome, close the loop
 
-# 9. FULL human-trader analysis (MTF + context + styles + memory)
+# 9. PAPER TRADING — safely monitor approved signals; NO real orders are sent
+python main.py paper                 # one safe live-market check now
+python main.py paper --watch         # keep checking every 30s (Ctrl+C to stop)
+python main.py paper --watch --interval 60 --symbol BTCUSDT
+# Immediate plans paper-fill at their stated entry after approval.
+# Conditional plans wait until a live candle reaches the planned entry.
+# SL / TP1 closes are recorded automatically in SQLite and feed `learn`.
+
+# Manual lifecycle controls remain available when you need them:
+python main.py execute 42            # mark an approved trade as executed
+python main.py close 42              # manually close it / record your own outcome note
+
+# 10. FULL human-trader analysis (MTF + context + styles + memory)
 python main.py analyze --symbol BTCUSDT --tf 15m
 
-# 10. what the AI remembers about this market (state memory)
+# 11. what the AI remembers about this market (state memory)
 python main.py state --symbol BTCUSDT --tf 15m
 
-# 11. self-improvement — recalibrate from what the engine measured
+# 12. self-improvement — recalibrate from backtests + decided paper trades
 python main.py learn
 
-# 10. coach — teaching mode
+# 13. coach — teaching mode
 python main.py coach                 # explain + mentor + personal feedback
 python main.py glossary FVG          # quick term lookup
 
-# 11. run tests
+# 14. run tests
 python -m pytest tests/ -q
 ```
 
@@ -261,13 +272,14 @@ the output is never empty.
 ## 🧪 Tests
 
 ```bash
-python -m pytest tests/ -q      # 69 tests, fully offline (synthetic data)
+python -m pytest tests/ -q      # 82 tests, fully offline (synthetic data)
 ```
 
 Covers: indicator math & no-look-ahead, structure detection (BOS/CHOCH, FVG,
 sweeps), score bounds, plan generation (SL below entry for BUY etc.), full
 pipeline, JSON schema validation, the backtester grader, the database, the
-signal lifecycle (approval gate transitions), the calibrator, and the coach.
+signal lifecycle (approval gate transitions), the conservative paper-trading
+runner (entry / SL / TP detection), the calibrator, and the coach.
 
 On every push, GitHub Actions runs this suite automatically
 (`.github/workflows/ci.yml`) plus an offline smoke test on the sample data.
@@ -302,19 +314,64 @@ database.
 
 ---
 
+## 🧪 Paper trading — the live-decision learning loop
+
+The paper runner turns **your approved decisions** into a measured, live-market
+sample without connecting to a trading account or sending an order anywhere.
+
+```bash
+# One pass: enroll any approved signals, then check active paper trades.
+python main.py paper
+
+# Keep it alive for unattended monitoring (recommended while testing).
+python main.py paper --watch --interval 30
+
+# Inspect combined history and paper-specific summary.
+python main.py stats
+```
+
+How it works:
+
+1. You approve a signal in the dashboard or with `python main.py approve <id>`.
+2. On its next runner pass, an **Immediate** plan is paper-filled at its stated
+   entry. A **waiting/conditional** plan stays `WAITING_ENTRY` until a live
+   candle trades through the planned entry level.
+3. The runner reads public Binance OHLCV data and moves the original lifecycle
+   from `APPROVED → EXECUTED → CLOSED` when an entry and then SL/TP1 are hit.
+4. It stores the simulated fill, exit, outcome, achieved R, runner note and
+   candle cursor in `paper_trades`. `python main.py learn` uses decided
+   `TP_HIT` / `STOP_LOSS` paper outcomes alongside historical backtests.
+
+### Safety and accuracy rules
+
+* **Paper only.** It has no exchange-order code, no exchange API key setting,
+  and never touches a real position or wallet.
+* **SL and TP1 only.** The first target closes the simulated position; TP2 is
+  not silently assumed filled.
+* **Conservative same-candle rule.** OHLCV cannot reveal which level came
+  first. If both stop and TP are inside one candle, the runner records a
+  stop-loss rather than an optimistic win.
+* The browser button runs one explicit check. For continuous monitoring after a
+  browser tab closes, keep `python main.py paper --watch` running in Terminal.
+
+---
+
 ## 🗄 Signal database — the memory
 
 Every `scan` and `watch` tick is saved by default to `data/cryptobrain.db`
 (SQLite, no extra deps) — signal, plans, feature snapshot, market context.
-Backtest outcomes land in the same store.
+Backtest outcomes and approved paper-trade outcomes land in the same local
+store.
 
 ```bash
-python main.py stats    # scans + plan distribution + backtest win-rates
+python main.py stats    # scans + backtest learning + paper-trade summary
 ```
 
-Tables: `scans`, `plans`, `backtest_results`. Use `--no-save` to skip DB
-writes. This store is the foundation for future confidence calibration
-(e.g. dampen a plan type the engine has measured as negative-expectancy).
+Tables: `scans`, `plans`, `backtest_results`, `paper_trades`, `decisions`.
+Use `--no-save` to skip ordinary scan writes. This store is the foundation for
+confidence calibration (e.g. dampen a plan type the engine has measured as
+negative-expectancy) while keeping historical backtest and live paper results
+visibly separate in the dashboard.
 
 ---
 
@@ -343,6 +400,9 @@ CREATED ─▶ PENDING_REVIEW ─▶ APPROVED ─▶ EXECUTED ─▶ CLOSED (out
   buttons in the dashboard's **Human approval queue**.
 * Every transition is logged in the `decisions` table with your note, so the
   Coach can later teach from *your* decision pattern.
+* The paper runner may advance an approved simulation through
+  `APPROVED → EXECUTED → CLOSED` with `reviewer=paper_runner`; its exact
+  fill/exit evidence lives in the linked `paper_trades` row.
 * `python main.py signal <id>` shows the full lifecycle trail.
 
 ## 🧠 Human-like thinking: MTF + context + styles + state memory
@@ -377,13 +437,14 @@ from ever hanging at "Loading…".
 
 ## 🧠 Self-improvement — the closed learning loop
 
-1. **Backtest** (`backtest --save`) grades every plan → outcomes stored in DB.
-2. **Learn** (`learn`) recomputes per-setup expectancy → calibration profile:
+1. **Backtest** (`backtest --save`) grades every historical plan → outcomes stored in DB.
+2. **Paper runner** (`paper --watch`) closes approved simulated live decisions at SL/TP1 → outcomes stored separately in DB.
+3. **Learn** (`learn`) recomputes per-setup expectancy from both decided sources → calibration profile:
    * Buy Pullback / FVG Retest Buy measured positive → **confidence boosted**
      (×1.25 in our first run)
    * Breakout Buy / Sweep Reversal Sell measured negative → **dampened**
      (×0.82 / ×0.64), and optionally filtered entirely if bad enough
-3. The profile is loaded on every scan, so **future signals are already smarter**.
+4. The profile is loaded on every scan, so **future signals are already smarter**.
    With no data the profile is empty and nothing changes — calibration is
    strictly additive. Tune via `CALIBRATE_MIN_N`, `CALIBRATE_GAIN`,
    `CALIBRATE_FILTER` in `.env`.
@@ -410,7 +471,7 @@ from ever hanging at "Loading…".
 
 ```
 crypto-brain/
-├── main.py                  # CLI: scan / watch / sources / backtest / stats / web
+├── main.py                  # CLI: scan / watch / paper / sources / backtest / stats / web
 ├── config.py                # env-driven configuration
 ├── engine/
 │   ├── indicators.py        # RSI MACD EMA VWAP ADX BB Supertrend WaveTrend …
@@ -440,8 +501,9 @@ crypto-brain/
 │   └── signal_engine.py     # orchestrator → final JSON
 ├── data/
 │   ├── binance_client.py    # geo-aware Binance market data
-│   ├── database.py          # SQLite learning store (scans/plans/decisions/backtests)
+│   ├── database.py          # SQLite store (scans/plans/decisions/backtests/paper trades)
 │   ├── backtester.py        # walk-forward plan grader (+1h/+4h/+24h)
+│   ├── paper_trading.py     # approved-signal live-market paper runner (SL / TP1)
 │   └── sources/
 │       ├── cryptodada_website.py  # private-site connector (api/browser)
 │       ├── discord_reader.py      # Discord reader + webhook push
