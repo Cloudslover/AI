@@ -102,18 +102,44 @@ class SignalDB:
         # and auto-refresh all write to this DB concurrently. WAL mode +
         # busy_timeout + check_same_thread=False prevent periodic
         # "database is locked" crashes on busy machines.
-        self.conn = sqlite3.connect(str(self.path), timeout=15,
+        self.conn = sqlite3.connect(str(self.path), timeout=30.0,
                                     check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA busy_timeout=15000")
-        self.conn.execute("PRAGMA synchronous=NORMAL")
-        self.conn.executescript(SCHEMA)
-        self._migrate()
-        self.conn.commit()
+        self._init_db()
+
+    def _init_db(self) -> None:
+        """Initialize pragmas and schema with retry for concurrent processes."""
+        for attempt in range(10):
+            try:
+                self.conn.execute("PRAGMA journal_mode=WAL")
+                self.conn.execute("PRAGMA busy_timeout=30000")
+                self.conn.execute("PRAGMA synchronous=NORMAL")
+                self.conn.executescript(SCHEMA)
+                self._migrate()
+                self.conn.commit()
+                break
+            except sqlite3.OperationalError as exc:
+                if "locked" in str(exc).lower() and attempt < 9:
+                    time.sleep(0.05 * (attempt + 1))
+                else:
+                    raise
+
+    def _retry_write(self, fn, max_attempts: int = 8):
+        """Execute a write transaction with automatic retry on locked database."""
+        for attempt in range(max_attempts):
+            try:
+                return fn()
+            except sqlite3.OperationalError as exc:
+                if "locked" in str(exc).lower() and attempt < max_attempts - 1:
+                    time.sleep(0.05 * (attempt + 1))
+                else:
+                    raise
 
     def close(self) -> None:
-        self.conn.close()
+        try:
+            self.conn.close()
+        except Exception:
+            pass
 
     # ── migration ────────────────────────────────────────────────────────
     def _migrate(self) -> None:
@@ -133,23 +159,25 @@ class SignalDB:
                       reviewer: str = "human") -> Optional[str]:
         """Transition a scan's lifecycle state and log a decision row.
         Returns the new state, or None if the scan doesn't exist."""
-        row = self.conn.execute("SELECT status FROM scans WHERE id=?", (scan_id,)).fetchone()
-        if row is None:
-            return None
-        from engine.lifecycle import transition, LifecycleError
-        try:
-            new_state = transition(row["status"], to_state)
-        except LifecycleError as exc:
-            raise LifecycleError(exc.message) from None
-        self.conn.execute(
-            "UPDATE scans SET status=?, lifecycle_ts=? WHERE id=?",
-            (new_state, int(time.time() * 1000), scan_id))
-        self.conn.execute(
-            "INSERT INTO decisions(scan_id, from_state, to_state, reviewer, note, ts) "
-            "VALUES (?,?,?,?,?,?)",
-            (scan_id, row["status"], new_state, reviewer, note, int(time.time() * 1000)))
-        self.conn.commit()
-        return new_state
+        def _do_update():
+            row = self.conn.execute("SELECT status FROM scans WHERE id=?", (scan_id,)).fetchone()
+            if row is None:
+                return None
+            from engine.lifecycle import transition, LifecycleError
+            try:
+                new_state = transition(row["status"], to_state)
+            except LifecycleError as exc:
+                raise LifecycleError(exc.message) from None
+            self.conn.execute(
+                "UPDATE scans SET status=?, lifecycle_ts=? WHERE id=?",
+                (new_state, int(time.time() * 1000), scan_id))
+            self.conn.execute(
+                "INSERT INTO decisions(scan_id, from_state, to_state, reviewer, note, ts) "
+                "VALUES (?,?,?,?,?,?)",
+                (scan_id, row["status"], new_state, reviewer, note, int(time.time() * 1000)))
+            self.conn.commit()
+            return new_state
+        return self._retry_write(_do_update)
 
     def pending_reviews(self, symbol: str | None = None) -> list[dict]:
         """Signals awaiting human approval, newest first."""
@@ -271,8 +299,6 @@ class SignalDB:
                           last_price: float | None = None,
                           checked_ts: int | None = None) -> None:
         """Persist the runner cursor/last seen price after a non-decisive pass."""
-        # ``checked_ts`` is intentionally not a schema column: checks is the
-        # durable audit counter while the candle cursor is what resumes safely.
         _ = checked_ts
         self.conn.execute(
             """UPDATE paper_trades
@@ -331,17 +357,19 @@ class SignalDB:
 
     # ── calibration (self-improvement profile) ───────────────────────────
     def save_calibration(self, profile: dict) -> None:
-        now = int(time.time() * 1000)
-        for plan_type, entry in profile.items():
-            self.conn.execute(
-                """INSERT INTO calibration(plan_type, multiplier, expectancy, samples, updated_at)
-                   VALUES (?,?,?,?,?)
-                   ON CONFLICT(plan_type) DO UPDATE SET
-                     multiplier=excluded.multiplier, expectancy=excluded.expectancy,
-                     samples=excluded.samples, updated_at=excluded.updated_at""",
-                (plan_type, entry.get("multiplier", 1.0),
-                 entry.get("expectancy"), entry.get("samples", 0), now))
-        self.conn.commit()
+        def _do_save():
+            now = int(time.time() * 1000)
+            for plan_type, entry in profile.items():
+                self.conn.execute(
+                    """INSERT INTO calibration(plan_type, multiplier, expectancy, samples, updated_at)
+                       VALUES (?,?,?,?,?)
+                       ON CONFLICT(plan_type) DO UPDATE SET
+                         multiplier=excluded.multiplier, expectancy=excluded.expectancy,
+                         samples=excluded.samples, updated_at=excluded.updated_at""",
+                    (plan_type, entry.get("multiplier", 1.0),
+                     entry.get("expectancy"), entry.get("samples", 0), now))
+            self.conn.commit()
+        return self._retry_write(_do_save)
 
     def load_calibration(self) -> dict:
         rows = self.conn.execute("SELECT * FROM calibration").fetchall()
@@ -352,59 +380,61 @@ class SignalDB:
     # ── scans ────────────────────────────────────────────────────────────
     def save_scan(self, payload: dict) -> int:
         """Persist one engine output (signal + plans + snapshot). Returns scan id."""
-        sig = payload.get("signal", {})
-        snap = payload.get("snapshot", {})
-        features = snap.get("features", {})
-        plans = payload.get("plans", [])
-        from engine.lifecycle import reviewable
-        status = "PENDING_REVIEW" if reviewable(sig) else "CREATED"
-        cur = self.conn.execute(
-            """INSERT INTO scans
-               (signal_id, ts, symbol, timeframe, price, action, entry, stop_loss, take_profit,
-                risk_reward, confidence_label, confidence_pct, reason, signal_type,
-                features_json, plans_json, context_json, status, lifecycle_ts)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (
-                sig.get("signal_id"),
-                sig.get("timestamp") or int(time.time() * 1000),
-                sig.get("asset", ""),
-                sig.get("timeframe", ""),
-                features.get("price"),
-                sig.get("action"),
-                sig.get("entry"),
-                sig.get("stop_loss"),
-                sig.get("take_profit"),
-                sig.get("risk_reward"),
-                sig.get("confidence"),
-                features.get("score_used"),
-                sig.get("reason", ""),
-                sig.get("signal_type", ""),
-                json.dumps(features, default=str),
-                json.dumps(plans, default=str),
-                json.dumps(payload.get("market_context", {}), default=str),
-                status,
-                int(time.time() * 1000),
-            ),
-        )
-        scan_id = cur.lastrowid
-        for p in plans:
-            tps = p.get("take_profits") or []
-            self.conn.execute(
-                """INSERT INTO plans
-                   (scan_id, plan_id, type, action, condition, trigger_level,
-                    entry, stop_loss, tp1, tp2, risk_reward, confidence_pct,
-                    confidence_label, status)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        def _do_save():
+            sig = payload.get("signal", {})
+            snap = payload.get("snapshot", {})
+            features = snap.get("features", {})
+            plans = payload.get("plans", [])
+            from engine.lifecycle import reviewable
+            status = "PENDING_REVIEW" if reviewable(sig) else "CREATED"
+            cur = self.conn.execute(
+                """INSERT INTO scans
+                   (signal_id, ts, symbol, timeframe, price, action, entry, stop_loss, take_profit,
+                    risk_reward, confidence_label, confidence_pct, reason, signal_type,
+                    features_json, plans_json, context_json, status, lifecycle_ts)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
-                    scan_id, p.get("id"), p.get("type"), p.get("action"),
-                    p.get("condition"), p.get("trigger_level"), p.get("entry"),
-                    p.get("stop_loss"), tps[0] if len(tps) > 0 else None,
-                    tps[1] if len(tps) > 1 else None, p.get("risk_reward"),
-                    p.get("confidence"), p.get("confidence_label"), p.get("status"),
+                    sig.get("signal_id"),
+                    sig.get("timestamp") or int(time.time() * 1000),
+                    sig.get("asset", ""),
+                    sig.get("timeframe", ""),
+                    features.get("price"),
+                    sig.get("action"),
+                    sig.get("entry"),
+                    sig.get("stop_loss"),
+                    sig.get("take_profit"),
+                    sig.get("risk_reward"),
+                    sig.get("confidence"),
+                    features.get("score_used"),
+                    sig.get("reason", ""),
+                    sig.get("signal_type", ""),
+                    json.dumps(features, default=str),
+                    json.dumps(plans, default=str),
+                    json.dumps(payload.get("market_context", {}), default=str),
+                    status,
+                    int(time.time() * 1000),
                 ),
             )
-        self.conn.commit()
-        return scan_id
+            scan_id = cur.lastrowid
+            for p in plans:
+                tps = p.get("take_profits") or []
+                self.conn.execute(
+                    """INSERT INTO plans
+                       (scan_id, plan_id, type, action, condition, trigger_level,
+                        entry, stop_loss, tp1, tp2, risk_reward, confidence_pct,
+                        confidence_label, status)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        scan_id, p.get("id"), p.get("type"), p.get("action"),
+                        p.get("condition"), p.get("trigger_level"), p.get("entry"),
+                        p.get("stop_loss"), tps[0] if len(tps) > 0 else None,
+                        tps[1] if len(tps) > 1 else None, p.get("risk_reward"),
+                        p.get("confidence"), p.get("confidence_label"), p.get("status"),
+                    ),
+                )
+            self.conn.commit()
+            return scan_id
+        return self._retry_write(_do_save)
 
     def latest_scans(self, symbol: str | None = None, limit: int = 20) -> list[dict]:
         q = "SELECT * FROM scans"
@@ -428,23 +458,25 @@ class SignalDB:
 
     # ── backtest results ─────────────────────────────────────────────────
     def save_backtest_rows(self, rows: list[dict], run_id: str) -> int:
-        n = 0
-        for r in rows:
-            self.conn.execute(
-                """INSERT INTO backtest_results
-                   (run_id, ts, symbol, timeframe, plan_type, action,
-                    confidence_pct, horizon_hours, outcome, rr_achieved,
-                    max_favorable, max_adverse, entry, trigger_level)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (run_id, r.get("ts"), r.get("symbol"), r.get("timeframe"),
-                 r.get("plan_type"), r.get("action"), r.get("confidence_pct"),
-                 r.get("horizon_hours"), r.get("outcome"), r.get("rr_achieved"),
-                 r.get("max_favorable"), r.get("max_adverse"), r.get("entry"),
-                 r.get("trigger_level")),
-            )
-            n += 1
-        self.conn.commit()
-        return n
+        def _do_save():
+            n = 0
+            for r in rows:
+                self.conn.execute(
+                    """INSERT INTO backtest_results
+                       (run_id, ts, symbol, timeframe, plan_type, action,
+                        confidence_pct, horizon_hours, outcome, rr_achieved,
+                        max_favorable, max_adverse, entry, trigger_level)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (run_id, r.get("ts"), r.get("symbol"), r.get("timeframe"),
+                     r.get("plan_type"), r.get("action"), r.get("confidence_pct"),
+                     r.get("horizon_hours"), r.get("outcome"), r.get("rr_achieved"),
+                     r.get("max_favorable"), r.get("max_adverse"), r.get("entry"),
+                     r.get("trigger_level")),
+                )
+                n += 1
+            self.conn.commit()
+            return n
+        return self._retry_write(_do_save)
 
     def backtest_stats(self) -> dict:
         """Win-rate learning: by plan type and by confidence bucket."""
