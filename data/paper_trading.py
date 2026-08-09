@@ -32,6 +32,7 @@ from typing import Any, Callable, Optional
 import pandas as pd
 
 from config import PAPER_MAX_CANDLES_PER_CHECK
+from data.symbols import normalize_symbol
 from data.binance_client import TIMEFRAME_TO_MS
 from data.database import SignalDB
 from engine.lifecycle import LifecycleError
@@ -243,6 +244,7 @@ class PaperTradingRunner:
 
     def enroll_approved(self, symbol: Optional[str] = None, result: Optional[PaperRun] = None) -> PaperRun:
         """Create durable paper records for un-enrolled APPROVED/EXECUTED scans."""
+        symbol = normalize_symbol(symbol) if symbol else None
         result = result or PaperRun()
         for scan in self.db.paper_candidates(symbol):
             try:
@@ -417,6 +419,7 @@ class PaperTradingRunner:
 
     def run_once(self, symbol: Optional[str] = None, enroll: bool = True) -> PaperRun:
         """Enroll approved signals and evaluate every active paper position once."""
+        symbol = normalize_symbol(symbol) if symbol else None
         result = PaperRun()
         if enroll:
             self.enroll_approved(symbol=symbol, result=result)

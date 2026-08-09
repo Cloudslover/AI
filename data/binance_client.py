@@ -23,6 +23,7 @@ import pandas as pd
 import requests
 
 from config import BINANCE_HOSTS, BINANCE_FUTURES_HOSTS
+from data.symbols import resolve_symbol
 
 TIMEFRAME_TO_MS = {
     "1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000,
@@ -45,8 +46,7 @@ class BinanceClient:
         self._local = threading.local()
         self._futures_ok: Optional[bool] = None  # None = not yet tested
         self._futures_checked_at: float = 0.0
-        self._context_cache: Optional[dict] = None
-        self._context_at: float = 0.0
+        self._context_cache: dict[str, tuple[float, dict]] = {}
 
     @property
     def session(self) -> requests.Session:
@@ -94,7 +94,8 @@ class BinanceClient:
         new.  The returned frame retains the standard columns ``ts, open,
         high, low, close, volume``.
         """
-        params = {"symbol": symbol, "interval": timeframe, "limit": min(max(1, int(limit)), 1000)}
+        spec = resolve_symbol(symbol)
+        params = {"symbol": spec.data_symbol, "interval": timeframe, "limit": min(max(1, int(limit)), 1000)}
         if start_time is not None:
             params["startTime"] = int(start_time)
         if end_time is not None:
@@ -102,8 +103,8 @@ class BinanceClient:
         data = self._get_first_host(BINANCE_HOSTS, "/api/v3/klines", params)
         if data is None:
             raise ConnectionError(
-                f"Could not fetch klines for {symbol} {timeframe} — check network "
-                f"or try a Binance-accessible location."
+                f"Could not fetch klines for {spec.symbol} ({spec.data_symbol}) {timeframe} — "
+                f"check network or try a Binance-accessible location."
             )
         df = pd.DataFrame(data, columns=[
             "ts", "open", "high", "low", "close", "volume",
@@ -112,9 +113,23 @@ class BinanceClient:
         ])
         for col in ("open", "high", "low", "close", "volume"):
             df[col] = df[col].astype(float)
-        return df[["ts", "open", "high", "low", "close", "volume"]].astype({"ts": "int64"})
+        out = df[["ts", "open", "high", "low", "close", "volume"]].astype({"ts": "int64"})
+        out.attrs["symbol"] = spec.symbol
+        out.attrs["data_symbol"] = spec.data_symbol
+        out.attrs["market"] = spec.market
+        out.attrs["provider"] = spec.provider
+        return out
 
     # ── Futures (optional; may geo-block) ────────────────────────────────
+    def _futures_pair(self, symbol: str) -> Optional[str]:
+        """Return the Binance USD-M futures pair for a user-facing symbol.
+
+        XAUUSD/GOLD uses PAXGUSDT spot candles as a proxy and has no
+        futures/funding context in this project, so futures methods return
+        None immediately.
+        """
+        return resolve_symbol(symbol).futures_symbol
+
     @property
     def futures_available(self) -> bool:
         now = time.time()
@@ -128,10 +143,11 @@ class BinanceClient:
 
     def funding_rate(self, symbol: str = "BTCUSDT") -> Optional[dict]:
         """Current (last) funding rate for the USDT-margined future."""
-        if not self.futures_available:
+        fut_symbol = self._futures_pair(symbol)
+        if not fut_symbol or not self.futures_available:
             return None
         data = self._get_first_host(BINANCE_FUTURES_HOSTS, "/fapi/v1/premiumIndex",
-                                    {"symbol": symbol}, timeout=FUT_TIMEOUT, retries=FUT_RETRIES)
+                                    {"symbol": fut_symbol}, timeout=FUT_TIMEOUT, retries=FUT_RETRIES)
         if not data:
             return None
         return {
@@ -141,21 +157,23 @@ class BinanceClient:
         }
 
     def open_interest(self, symbol: str = "BTCUSDT") -> Optional[dict]:
-        if not self.futures_available:
+        fut_symbol = self._futures_pair(symbol)
+        if not fut_symbol or not self.futures_available:
             return None
         data = self._get_first_host(BINANCE_FUTURES_HOSTS, "/fapi/v1/openInterest",
-                                    {"symbol": symbol}, timeout=FUT_TIMEOUT, retries=FUT_RETRIES)
+                                    {"symbol": fut_symbol}, timeout=FUT_TIMEOUT, retries=FUT_RETRIES)
         if not data:
             return None
         return {"open_interest": float(data.get("openInterest", 0))}
 
     def long_short_ratio(self, symbol: str = "BTCUSDT", period: str = "5m",
                          limit: int = 1) -> Optional[dict]:
-        if not self.futures_available:
+        fut_symbol = self._futures_pair(symbol)
+        if not fut_symbol or not self.futures_available:
             return None
         data = self._get_first_host(
             BINANCE_FUTURES_HOSTS, "/futures/data/globalLongShortAccountRatio",
-            {"symbol": symbol, "period": period, "limit": limit},
+            {"symbol": fut_symbol, "period": period, "limit": limit},
             timeout=FUT_TIMEOUT, retries=FUT_RETRIES)
         if not data:
             return None
@@ -165,10 +183,11 @@ class BinanceClient:
     def liquidations(self, symbol: str = "BTCUSDT") -> Optional[dict]:
         """Recent forced-liquidations snapshot (via allForceOrders is heavy, so
         we use the public 24h stats + the top longs/shorts as a proxy)."""
-        if not self.futures_available:
+        fut_symbol = self._futures_pair(symbol)
+        if not fut_symbol or not self.futures_available:
             return None
         data = self._get_first_host(BINANCE_FUTURES_HOSTS, "/fapi/v1/ticker/24hr",
-                                    {"symbol": symbol}, timeout=FUT_TIMEOUT, retries=FUT_RETRIES)
+                                    {"symbol": fut_symbol}, timeout=FUT_TIMEOUT, retries=FUT_RETRIES)
         if not data:
             return None
         return {
@@ -180,36 +199,56 @@ class BinanceClient:
 
     # ── Combined convenience ─────────────────────────────────────────────
     def market_context(self, symbol: str = "BTCUSDT") -> dict:
-        """Futures context, cached 60s and fetched in parallel so it can never
-        block the dashboard for long. Returns quickly even when unreachable."""
-        now = time.time()
-        if self._context_cache and now - self._context_at < _CONTEXT_TTL:
-            return self._context_cache
+        """Futures/provider context, cached per symbol.
 
-        ctx = {"futures": False, "note": "futures unreachable from this network"}
-        if self.futures_available:
+        Crypto pairs such as BTCUSDT and ETHUSDT include optional Binance
+        futures fields when the network permits. XAUUSD/GOLD is routed to
+        PAXGUSDT spot candles and explicitly reports that futures context is
+        not available rather than looking geo-blocked.
+        """
+        spec = resolve_symbol(symbol)
+        now = time.time()
+        hit = self._context_cache.get(spec.symbol)
+        if hit and now - hit[0] < _CONTEXT_TTL:
+            return hit[1]
+
+        ctx = {
+            "symbol": spec.symbol,
+            "data_symbol": spec.data_symbol,
+            "market": spec.market,
+            "provider": spec.provider,
+            "futures": False,
+            "note": spec.note or "futures unreachable from this network",
+        }
+        if spec.futures_symbol and self.futures_available:
             from concurrent.futures import ThreadPoolExecutor
             with ThreadPoolExecutor(max_workers=4) as ex:
-                fr = ex.submit(self.funding_rate, symbol)
-                oi = ex.submit(self.open_interest, symbol)
-                ls = ex.submit(self.long_short_ratio, symbol)
-                liq = ex.submit(self.liquidations, symbol)
+                fr = ex.submit(self.funding_rate, spec.symbol)
+                oi = ex.submit(self.open_interest, spec.symbol)
+                ls = ex.submit(self.long_short_ratio, spec.symbol)
+                liq = ex.submit(self.liquidations, spec.symbol)
                 # .exception() instead of .result(): a failing future must never
                 # re-raise and kill the whole scan.
                 def _safe(fut):
                     try:
-                        return fut.exception() or fut.result()
+                        if fut.exception():
+                            return None
+                        return fut.result()
                     except Exception:
                         return None
                 fr, oi, ls, liq = (_safe(f) for f in (fr, oi, ls, liq))
-            ctx = {
+            ctx.update({
                 "futures": True,
+                "note": "futures context available",
+                "futures_symbol": spec.futures_symbol,
                 "funding_rate_pct": fr["funding_rate_pct"] if fr else None,
                 "open_interest": oi["open_interest"] if oi else None,
                 "long_short_ratio": ls["long_short_ratio"] if ls else None,
                 "liq_24h_high": liq["24h_high"] if liq else None,
                 "liq_24h_low": liq["24h_low"] if liq else None,
                 "liq_24h_change_pct": liq["24h_price_change_pct"] if liq else None,
-            }
-        self._context_cache, self._context_at = ctx, now
+            })
+        elif spec.futures_symbol:
+            ctx["note"] = "futures unreachable from this network"
+        self._context_cache[spec.symbol] = (now, ctx)
         return ctx

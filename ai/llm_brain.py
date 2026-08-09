@@ -77,12 +77,17 @@ class LLMBrain:
             "features": {k: payload.get("snapshot", {}).get("features", {}).get(k) for k in
                          ("price", "trend", "rsi", "adx", "volume_ratio", "above_vwap",
                           "premium_discount", "event_kind", "rsi_divergence", "sweep")},
+            "intelligence": {k: payload.get("intelligence", {}).get(k) for k in
+                             ("signal", "confidence", "risk_reward", "news", "scenario_A",
+                              "scenario_B", "scenario_C")},
         }
         return (
-            "You are the narrative layer of a crypto signal engine. Summarise the "
-            "following machine state in 3-6 short bullet points for a trader. Be "
-            "specific with levels. Do NOT give financial advice, position sizes or "
-            "leverage. JSON: " + json.dumps(slim)
+            "You are the narrative layer of an AI Trading Intelligence System for "
+            "BTCUSDT, ETHUSDT and XAUUSD/Gold. Think like a professional analyst: "
+            "capital preservation first, never force a trade. Summarise the following "
+            "machine state in 3-6 short bullet points for a trader. Be specific with "
+            "levels. Do NOT give financial advice, position sizes or leverage. JSON: "
+            + json.dumps(slim)
         )
 
     def _call_openai(self, prompt: str) -> Optional[str]:

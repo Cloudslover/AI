@@ -28,6 +28,7 @@ from typing import Optional
 
 import pandas as pd
 
+from data.symbols import normalize_symbol
 from .indicators import add_all_indicators, find_rsi_divergence
 from .structure import analyze_structure
 from .features import build_snapshot
@@ -142,6 +143,7 @@ def analyze_frame(df: pd.DataFrame, symbol: str = "BTCUSDT", timeframe: str = "1
     multiplier / filtered) produced by brain.calibrator; None keeps behaviour
     identical to an uncalibrated engine.
     """
+    symbol = normalize_symbol(symbol)
     df = df.copy()
     df.attrs["symbol"] = symbol
     df.attrs["timeframe"] = timeframe

@@ -37,13 +37,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from flask import Flask, jsonify, render_template_string, request
 
-from config import SYMBOL, TIMEFRAME, BARS, MIN_CONFIDENCE, DEFAULT_RISK_REWARD, DASHBOARD_HOST, DASHBOARD_PORT, VERSION
+from config import SYMBOL, SYMBOLS, TIMEFRAME, BARS, MIN_CONFIDENCE, DEFAULT_RISK_REWARD, DASHBOARD_HOST, DASHBOARD_PORT, VERSION
+from data.symbols import normalize_symbol, resolve_symbol, symbol_choices
 from data.binance_client import BinanceClient
 from engine.signal_engine import analyze_frame
 from output.signal_schema import validate_output
 
 _CACHE: dict = {"payload": None, "ts": 0, "ttl": 40}
-_LAST_GOOD: dict = {}   # last successfully-computed payload — served on transient failures
+_LAST_GOOD: dict[tuple[str, str], dict] = {}   # last successful payload by (symbol, timeframe)
+
+
+def _sym(value: str | None) -> str:
+    return normalize_symbol(value or SYMBOL)
 
 
 def _persist(payload: dict) -> tuple[int, str]:
@@ -79,6 +84,7 @@ def _basic_scan(symbol: str, tf: str, save: bool) -> dict:
     """Engine-only quick scan (no MTF/context) — the guaranteed fallback so the
     dashboard always shows data even if external sources are unreachable."""
     import threading
+    symbol = _sym(symbol)
     result: dict = {}
 
     def _work():
@@ -89,8 +95,13 @@ def _basic_scan(symbol: str, tf: str, save: bool) -> dict:
                                 min_confidence=MIN_CONFIDENCE,
                                 default_rr=DEFAULT_RISK_REWARD)
             payload = out.as_json()
-            payload["market_context"] = {"futures": False,
-                                         "note": "not checked (fallback mode)"}
+            payload["market_context"] = client.market_context(symbol)
+            payload["market_context"]["fallback_note"] = "futures not fully checked (fallback mode)"
+            try:
+                from brain.trading_intelligence import build_intelligence
+                payload["intelligence"] = build_intelligence(payload, df=df)
+            except Exception:
+                pass
             payload["validation"] = validate_output(payload)
             payload["degraded"] = True
             payload["degraded_reason"] = "full analysis timed out — showing engine-only signal"
@@ -108,13 +119,15 @@ def _basic_scan(symbol: str, tf: str, save: bool) -> dict:
                 _persist(payload)
             except Exception:
                 pass
-        _LAST_GOOD.update(payload)
+        _LAST_GOOD[(symbol, tf)] = payload
         return payload
     raise ConnectionError(result.get("error", "scan timed out"))
 
 
 def compute_payload(symbol: str, tf: str, save: bool = True, use_cache: bool = True) -> dict:
+    symbol = _sym(symbol)
     if use_cache and _CACHE["payload"] and _CACHE["payload"].get("signal", {}).get("asset") == symbol \
+            and _CACHE["payload"].get("signal", {}).get("timeframe") == tf \
             and time.time() - _CACHE["ts"] < _CACHE["ttl"]:
         return _CACHE["payload"]
 
@@ -139,11 +152,12 @@ def compute_payload(symbol: str, tf: str, save: bool = True, use_cache: bool = T
     t.join(timeout=_SCAN_TIMEOUT)
 
     if "payload" not in result:
-        # Fallback: if we have a last-good payload, serve it marked stale so the
-        # dashboard never blanks on a transient failure. Otherwise engine-only
-        # quick scan; if even that fails, an error-shaped payload (still 200).
-        if _LAST_GOOD:
-            stale = dict(_LAST_GOOD)
+        # Fallback: if we have a last-good payload for THIS asset/timeframe,
+        # serve it marked stale so the dashboard never blanks on transient
+        # failures. Never show BTC data while the user selected ETH/XAU.
+        key = (symbol, tf)
+        if key in _LAST_GOOD:
+            stale = dict(_LAST_GOOD[key])
             stale["stale"] = True
             stale["stale_error"] = result.get("error", "scan timed out")
             _CACHE.update(payload=stale, ts=time.time())
@@ -151,6 +165,7 @@ def compute_payload(symbol: str, tf: str, save: bool = True, use_cache: bool = T
         try:
             payload = _basic_scan(symbol, tf, save=save)
         except Exception as exc:
+            spec = resolve_symbol(symbol)
             payload = {
                 "signal": {"signal_id": f"{symbol}_{int(time.time()*1000)}",
                            "timestamp": int(time.time()*1000), "asset": symbol,
@@ -159,6 +174,9 @@ def compute_payload(symbol: str, tf: str, save: bool = True, use_cache: bool = T
                            "confidence": "LOW", "timeframe": tf,
                            "reason": f"scan failed: {exc}", "signal_type": "ERROR"},
                 "plans": [], "snapshot": {"features": {}, "scores": {}},
+                "market_context": {"symbol": spec.symbol, "data_symbol": spec.data_symbol,
+                                   "market": spec.market, "provider": spec.provider,
+                                   "futures": False, "note": spec.note or "not checked"},
                 "error": str(exc), "lifecycle": {"status": "ERROR", "note": str(exc)},
             }
         _CACHE.update(payload=payload, ts=time.time())
@@ -170,7 +188,7 @@ def compute_payload(symbol: str, tf: str, save: bool = True, use_cache: bool = T
             _persist(payload)
         except Exception:
             pass
-    _LAST_GOOD.update(payload)
+    _LAST_GOOD[(symbol, tf)] = payload
     _CACHE.update(payload=payload, ts=time.time())
     return payload
 
@@ -229,9 +247,13 @@ HTML = """<!doctype html>
   <div><h1>🧠 CryptoBrain — All-in-One <span class="badge" style="background:var(--line)">v{{version}}</span></h1>
   <div class="sub">watch everything · click to approve · the engine learns from you</div></div>
   <div class="flex">
-    <input id="sym" value="{{symbol}}" size="10">
+    <input id="sym" list="symbols" value="{{symbol}}" size="10" title="BTCUSDT, ETHUSDT, XAUUSD/GOLD, or any Binance USDT pair">
+    <datalist id="symbols">
+      {% for s in symbols %}<option value="{{s.symbol}}">{{s.label}}{% if s.data_symbol != s.symbol %} · {{s.data_symbol}}{% endif %}</option>{% endfor %}
+    </datalist>
+    {% for s in symbols %}<button class="rowbtn" onclick="setSymbol('{{s.symbol}}')">{{s.symbol}}</button>{% endfor %}
     <select id="tf">
-      {% for t in ['1m','5m','15m','30m','1h','4h','1d'] %}<option value="{{t}}" {{'selected' if t==tf}}>{{t}}</option>{% endfor %}
+      {% for t in ['1m','5m','15m','30m','1h','4h','1d','1w','1M'] %}<option value="{{t}}" {{'selected' if t==tf}}>{{t}}</option>{% endfor %}
     </select>
     <button class="rowbtn" onclick="load(true)">Refresh</button>
     <label class="note"><input type="checkbox" id="auto" checked> auto</label>
@@ -263,6 +285,7 @@ const fmt=(v,n=2)=> v==null?'—':Number(v).toLocaleString(undefined,{minimumFra
 const cls=a=> a==='BUY'?'BUY':a==='SELL'?'SELL':'NOTRADE';
 const stCls=s=> s==='APPROVED'?'var(--green)':s==='REJECTED'?'var(--red)':s==='EXECUTED'?'var(--blue)':s==='CLOSED'?'var(--amber)':'var(--amber)';
 const esc=x=> String(x??'').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+function setSymbol(sym){ const el=document.getElementById('sym'); if(el) el.value=sym; load(true); }
 
 function card(title, inner, span){ return `<div class="card" ${span?'style="grid-column:1/-1"':''}><h2>${title}</h2>${inner}</div>`; }
 
@@ -293,9 +316,38 @@ function render(d){
       <b>Entry</b><span class="mono">${fmt(s.entry)}</span>
       <b>Stop loss</b><span class="mono">${fmt(s.stop_loss)}</span>
       <b>Take profit</b><span class="mono">${fmt(s.take_profit)}</span>
+      ${ctx.data_symbol&&ctx.data_symbol!==s.asset?`<b>Data source</b><span>${esc(ctx.data_symbol)} (${esc(ctx.provider||'provider')})</span>`:''}
       <b>Reason</b><span>${esc(s.reason)}</span>
       <b>Note</b><span>${esc(lc.note||'')}</span>
     </div>${decideBtns}`, true);
+
+  const intel=d.intelligence||{};
+  if(intel.asset){
+    const fchecks=intel.trade_filter||{};
+    html += card('AI TRADING DESK — professional filter', `
+      <div class="flex" style="margin-bottom:6px">
+        <span class="pill ${cls(intel.signal)}">${esc(intel.signal)}</span>
+        <b>${esc(intel.asset)} · ${esc(intel.timeframe)}</b>
+        <span class="badge">confidence ${intel.confidence??0}%</span>
+        <span class="badge">RR ${esc(intel.risk_reward||'0')}</span>
+        <span class="badge">risk ${esc(intel.risk||'')}</span>
+      </div>
+      <div class="kv">
+        <b>Trend</b><span>${esc(intel.trend)} · ${esc(intel.market_structure)}</span>
+        <b>Entry</b><span class="mono">${(intel.entry||[]).map(fmt).join(', ')||'—'}</span>
+        <b>Stop</b><span class="mono">${fmt(intel.stop_loss)}</span>
+        <b>Targets</b><span class="mono">${(intel.take_profit||[]).map(fmt).join(', ')||'—'}</span>
+        <b>News</b><span>${esc(intel.news)}</span>
+        <b>Liquidity</b><span>${esc(intel.liquidity)}</span>
+        <b>SMC</b><span>OB ${esc(intel.order_block)} · FVG ${esc(intel.fair_value_gap)}</span>
+        <b>Decision</b><span>${esc(intel.self_review?.capital_preservation_decision||'')}</span>
+      </div>
+      <div class="note" style="margin-top:6px">${(intel.reason||[]).slice(0,6).map(r=>'• '+esc(r)).join('<br>')}</div>
+      <details style="margin-top:8px"><summary>scenarios + filter checks</summary>
+        <div class="note" style="margin-top:6px">A: ${esc(intel.scenario_A)}<br>B: ${esc(intel.scenario_B)}<br>C: ${esc(intel.scenario_C)}</div>
+        <table style="margin-top:6px"><tr><th>Filter</th><th>OK</th><th>Value</th></tr>${Object.entries(fchecks).map(([k,v])=>`<tr><td>${esc(k)}</td><td style="color:${v.ok?'var(--green)':'var(--red)'}">${v.ok?'✓':'✗'}</td><td>${esc(v.value??'')}</td></tr>`).join('')}</table>
+      </details>`, true);
+  }
 
   html += card(`CANDLESTICK — ${s.asset} ${s.timeframe}`,
     `<div id="chart" style="width:100%;height:260px"></div>
@@ -304,7 +356,7 @@ function render(d){
   const mtf=d.mtf||{}, views=mtf.views||{}, al=mtf.alignment||{};
   html += card('MULTI-TIMEFRAME (HTF → LTF)', `
     <table><tr><th>TF</th><th>Trend</th><th>RSI</th><th>ADX</th><th>Event</th><th>Zone</th></tr>
-    ${['1d','4h','1h','15m','5m'].map(tf=>{
+    ${['1M','1w','1d','4h','1h','30m','15m','5m','1m'].map(tf=>{
       const v=views[tf]||{};
       if(!v.available) return `<tr><td>${tf}</td><td class="muted">—</td><td/><td/><td/><td/></tr>`;
       return `<tr><td><b>${tf}</b></td>
@@ -365,11 +417,13 @@ function render(d){
     <div class="muted" style="margin-top:6px">${(sc.bull?.reasons||[]).concat(sc.bear?.reasons||[]).slice(0,6).map(r=>'• '+esc(r)).join('<br>')}</div>`);
 
   html += card('MARKET CONTEXT', `<div class="kv">
+    <b>Provider symbol</b><span>${ctx.data_symbol?esc(ctx.data_symbol)+' · '+esc(ctx.provider||'provider'):'n/a'}</span>
+    <b>Market</b><span>${esc(ctx.market||'n/a')}</span>
     <b>Funding</b><span>${ctx.funding_rate_pct!=null?ctx.funding_rate_pct+'%':'n/a'}</span>
     <b>Open interest</b><span>${ctx.open_interest!=null?fmt(ctx.open_interest,0):'n/a'}</span>
     <b>L/S ratio</b><span>${ctx.long_short_ratio??'n/a'}</span>
     <b>24h change</b><span>${ctx.liq_24h_change_pct!=null?ctx.liq_24h_change_pct+'%':'n/a'}</span>
-    <b>Futures</b><span>${ctx.futures?'available':'geo-blocked from this network'}</span>
+    <b>Futures</b><span>${ctx.futures?'available':esc(ctx.note||'not available')}</span>
   </div>`);
 
   const mctx=d.context||{};
@@ -732,21 +786,39 @@ def make_app() -> Flask:
 
     @app.get("/")
     def index():
-        return render_template_string(HTML, symbol=SYMBOL, tf=TIMEFRAME, version=VERSION)
+        return render_template_string(HTML, symbol=SYMBOL, tf=TIMEFRAME,
+                                      version=VERSION, symbols=symbol_choices(SYMBOLS))
 
     @app.get("/api/scan")
     def api_scan():
-        symbol = request.args.get("symbol", SYMBOL).upper()
+        symbol = _sym(request.args.get("symbol", SYMBOL))
         tf = request.args.get("tf", TIMEFRAME)
         force = request.args.get("force") == "1"
         try:
             if force:
-                _CACHE.clear()
+                _CACHE.update(payload=None, ts=0, ttl=_CACHE.get("ttl", 40))
             return jsonify(compute_payload(symbol, tf, save=True, use_cache=not force))
         except ConnectionError as exc:
             return jsonify({"error": str(exc)}), 502
         except Exception as exc:  # pragma: no cover
             return jsonify({"error": f"{type(exc).__name__}: {exc}"}), 500
+
+    @app.get("/api/intelligence")
+    def api_intelligence():
+        """JSON-only professional desk report for an asset/timeframe."""
+        symbol = _sym(request.args.get("symbol", SYMBOL))
+        tf = request.args.get("tf", TIMEFRAME)
+        force = request.args.get("force") == "1"
+        try:
+            payload = compute_payload(symbol, tf, save=False, use_cache=not force)
+            return jsonify(payload.get("intelligence", {}))
+        except Exception as exc:
+            return jsonify({
+                "asset": symbol,
+                "signal": "NO TRADE",
+                "confidence": 0,
+                "reason": [f"Insufficient market data: {type(exc).__name__}: {exc}"],
+            }), 200
 
     @app.get("/api/pending")
     def api_pending():
@@ -757,7 +829,7 @@ def make_app() -> Flask:
     @app.get("/api/paper")
     def api_paper():
         """Paper-monitor dashboard state. Read-only; does not start a runner."""
-        symbol = (request.args.get("symbol") or "").upper() or None
+        symbol = _sym(request.args.get("symbol")) if request.args.get("symbol") else None
         from data.database import SignalDB
         with SignalDB() as db:
             return jsonify({"stats": db.paper_trade_stats(symbol)})
@@ -771,7 +843,7 @@ def make_app() -> Flask:
         sends an order to an exchange.
         """
         body = request.get_json(silent=True) or {}
-        symbol = (body.get("symbol") or "").upper() or None
+        symbol = _sym(body.get("symbol")) if body.get("symbol") else None
         try:
             from data.database import SignalDB
             from data.paper_trading import PaperTradingRunner
@@ -838,7 +910,7 @@ def make_app() -> Flask:
 
     @app.get("/api/coach")
     def api_coach():
-        symbol = request.args.get("symbol", SYMBOL).upper()
+        symbol = _sym(request.args.get("symbol", SYMBOL))
         tf = request.args.get("tf", TIMEFRAME)
         from brain.coach import explain_signal, mentor, personal_feedback
         from data.database import SignalDB
@@ -854,7 +926,7 @@ def make_app() -> Flask:
     @app.get("/api/candles")
     def api_candles():
         """OHLCV for the inline candlestick chart (no external libs)."""
-        symbol = request.args.get("symbol", SYMBOL).upper()
+        symbol = _sym(request.args.get("symbol", SYMBOL))
         tf = request.args.get("tf", TIMEFRAME)
         limit = min(int(request.args.get("limit", 90)), 300)
         try:
@@ -866,7 +938,7 @@ def make_app() -> Flask:
 
     @app.get("/api/state")
     def api_state():
-        symbol = request.args.get("symbol", SYMBOL).upper()
+        symbol = _sym(request.args.get("symbol", SYMBOL))
         tf = request.args.get("tf", TIMEFRAME)
         from brain.state_memory import SignalMemory
         mem = SignalMemory()
@@ -887,7 +959,7 @@ def make_app() -> Flask:
     def api_backtest():
         """One-click: quick backtest on recent bars + auto-learn."""
         body = request.get_json(silent=True) or {}
-        symbol = body.get("symbol", SYMBOL).upper()
+        symbol = _sym(body.get("symbol", SYMBOL))
         tf = body.get("tf", TIMEFRAME)
         bars = min(int(body.get("bars", 300)), 1000)
         step = int(body.get("step", 3))

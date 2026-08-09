@@ -3,8 +3,9 @@
 
 Usage:
   python main.py scan --symbol BTCUSDT --tf 15m --json
-  python main.py scan --symbols BTCUSDT,ETHUSDT,SOLUSDT
-  python main.py watch --symbol BTCUSDT --interval 120      # continuous loop
+  python main.py scan --symbols BTCUSDT,ETHUSDT,XAUUSD
+  python main.py intelligence --symbol XAUUSD --tf 15m      # JSON-only desk report
+  python main.py watch --symbol ETH --interval 120          # continuous loop
   python main.py web                                         # dashboard
   python main.py paper --watch                               # live-market paper monitor
   python main.py sources                                     # CryptoDada + Discord + news
@@ -20,9 +21,10 @@ from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from config import (SYMBOL, TIMEFRAME, BARS, MIN_CONFIDENCE, DEFAULT_RISK_REWARD,
+from config import (SYMBOL, SYMBOLS, TIMEFRAME, BARS, MIN_CONFIDENCE, DEFAULT_RISK_REWARD,
                     DASHBOARD_HOST, DASHBOARD_PORT, PAPER_POLL_SECONDS, VERSION)
 
+from data.symbols import normalize_symbol, parse_symbol_list
 from data.binance_client import BinanceClient
 from engine.signal_engine import analyze_frame
 from output.signal_schema import validate_output
@@ -31,6 +33,16 @@ from output.notifiers import notify_all
 
 def _client() -> BinanceClient:
     return BinanceClient()
+
+
+def _sym(value: str | None) -> str:
+    """Normalize BTC/ETH/XAU aliases before storing or filtering signals."""
+    return normalize_symbol(value or SYMBOL)
+
+
+def _symbols(value: str | None) -> list[str]:
+    """Parse comma-separated assets using the configured BTC/ETH/XAU watchlist."""
+    return parse_symbol_list(value, default=SYMBOLS)
 
 
 def _load_calibration() -> dict:
@@ -47,6 +59,7 @@ def run_scan(symbol: str, timeframe: str, bars: int, with_context: bool = True,
              with_llm: bool = False, save_db: bool = True,
              auto_approve: bool = False) -> dict:
     from brain.full_pipeline import analyze_full
+    symbol = _sym(symbol)
     payload = analyze_full(symbol, timeframe, bars,
                            with_context=with_context, with_memory=True)
 
@@ -86,7 +99,7 @@ def run_scan(symbol: str, timeframe: str, bars: int, with_context: bool = True,
 
 
 def cmd_scan(args) -> int:
-    symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    symbols = _symbols(args.symbols)
     all_payloads = []
     for sym in symbols:
         try:
@@ -159,12 +172,14 @@ def _print_human(payload: dict) -> None:
         kl = mtf.get("key_levels", {})
         print(f"   support {kl.get('support', [])}  resistance {kl.get('resistance', [])}")
 
-    if payload.get("market_context", {}).get("futures"):
-        ctx = payload["market_context"]
+    ctx = payload.get("market_context", {})
+    if ctx.get("data_symbol") and ctx.get("data_symbol") != sig.get("asset"):
+        print(f"   data source {ctx.get('data_symbol')} ({ctx.get('provider')})")
+    if ctx.get("futures"):
         print(f"   funding {ctx['funding_rate_pct']}%  OI {ctx['open_interest']:,.0f}  "
               f"L/S {ctx['long_short_ratio']:.2f}")
     else:
-        print("   futures context unavailable from this network (geo-block) — works from most regions")
+        print(f"   futures context unavailable — {ctx.get('note', 'not available')}")
     lc = payload.get("lifecycle")
     if lc:
         print(f"   lifecycle: {lc.get('status')} — {lc.get('note')}")
@@ -172,11 +187,12 @@ def _print_human(payload: dict) -> None:
 
 
 def cmd_watch(args) -> int:
-    print(f"Watching {args.symbol} {args.tf} every {args.interval}s — Ctrl+C to stop")
+    symbol = _sym(args.symbol)
+    print(f"Watching {symbol} {args.tf} every {args.interval}s — Ctrl+C to stop")
     last_sig = None
     while True:
         try:
-            payload = run_scan(args.symbol, args.tf, args.bars,
+            payload = run_scan(symbol, args.tf, args.bars,
                                save_db=not args.no_save, auto_approve=args.auto_approve)
             sig = payload["signal"]
             if sig["action"] != "NO TRADE" and sig.get("signal_id") != last_sig:
@@ -216,9 +232,10 @@ def cmd_backtest(args) -> int:
     from data.database import SignalDB
 
     client = _client()
-    df = client.klines(args.symbol, args.tf, args.bars)
+    symbol = _sym(args.symbol)
+    df = client.klines(symbol, args.tf, args.bars)
     horizons = [float(h) for h in args.horizons.split(",") if h.strip()]
-    result = run_backtest(df, symbol=args.symbol, timeframe=args.tf,
+    result = run_backtest(df, symbol=symbol, timeframe=args.tf,
                           horizons=horizons, min_confidence=args.min_conf)
     report = result["report"]
     save_report(report)
@@ -229,7 +246,7 @@ def cmd_backtest(args) -> int:
         rows = []
         for g in result["graded"]:
             r = g.as_row()
-            r.update({"run_id": run_id, "symbol": args.symbol,
+            r.update({"run_id": run_id, "symbol": symbol,
                       "timeframe": args.tf})
             rows.append(r)
         with SignalDB() as db:
@@ -248,7 +265,7 @@ def _print_review_row(r: dict) -> None:
 def cmd_review(args) -> int:
     from data.database import SignalDB
     with SignalDB() as db:
-        rows = db.pending_reviews(args.symbol or None)
+        rows = db.pending_reviews(_sym(args.symbol) if args.symbol else None)
     print(f"Pending human approval: {len(rows)}")
     for r in rows:
         _print_review_row(r)
@@ -318,7 +335,7 @@ def cmd_paper(args) -> int:
     from data.paper_trading import PaperTradingRunner
 
     client = _client()
-    symbol = (args.symbol or "").upper() or None
+    symbol = _sym(args.symbol) if args.symbol else None
 
     def one_pass() -> dict:
         with SignalDB() as db:
@@ -482,13 +499,23 @@ def _print_context(ctx: dict) -> None:
               f"{' · '.join(reg.get('parts', [])[:5])}")
 
 
+def cmd_intelligence(args) -> int:
+    """Strict professional desk report: JSON only, capital first."""
+    from brain.full_pipeline import analyze_full
+    symbol = _sym(args.symbol)
+    payload = analyze_full(symbol, args.tf, args.bars, with_context=True)
+    print(json.dumps(payload.get("intelligence", {}), indent=2, default=str))
+    return 0
+
+
 def cmd_analyze(args) -> int:
     """Full 'human trader' analysis: MTF + context + styles + memory."""
     from brain.full_pipeline import analyze_full
-    payload = analyze_full(args.symbol, args.tf, args.bars, with_context=True)
+    symbol = _sym(args.symbol)
+    payload = analyze_full(symbol, args.tf, args.bars, with_context=True)
     sig = payload["signal"]
     print("=" * 72)
-    print(f"🧠 FULL ANALYSIS — {args.symbol} {args.tf}")
+    print(f"🧠 FULL ANALYSIS — {symbol} {args.tf}")
     print(f"   {sig['action']} {sig['confidence']} — {sig['reason']}")
     mtf = payload.get("mtf", {})
     a = mtf.get("alignment", {})
@@ -523,10 +550,11 @@ def cmd_analyze(args) -> int:
 def cmd_state(args) -> int:
     """Show the AI's remembered market state + event log."""
     from brain.state_memory import SignalMemory
+    symbol = _sym(args.symbol)
     mem = SignalMemory()
-    row = mem.get_state(args.symbol, args.tf)
+    row = mem.get_state(symbol, args.tf)
     print("=" * 66)
-    print(f"STATE MEMORY — {args.symbol} {args.tf}")
+    print(f"STATE MEMORY — {symbol} {args.tf}")
     if not row:
         print("No state recorded yet. Run `python main.py analyze` or `scan` first.")
         return 0
@@ -551,7 +579,7 @@ def cmd_state(args) -> int:
         pass
     print("-" * 66)
     print("  recent state events:")
-    for e in mem.history(args.symbol, args.tf, limit=10):
+    for e in mem.history(symbol, args.tf, limit=10):
         print(f"    {time.strftime('%m-%d %H:%M', time.localtime(e['ts']/1000))}  "
               f"{e['kind']:<8} {e['detail'][:80]}")
     return 0
@@ -560,11 +588,12 @@ def cmd_state(args) -> int:
 def cmd_stats(args) -> int:
     from data.database import SignalDB
 
+    symbol = _sym(args.symbol) if args.symbol else None
     with SignalDB() as db:
-        scans = db.latest_scans(args.symbol or None, limit=15)
+        scans = db.latest_scans(symbol, limit=15)
         plan_stats = db.plan_stats()
         bt = db.backtest_stats()
-        paper = db.paper_trade_stats(args.symbol or None)
+        paper = db.paper_trade_stats(symbol)
 
     print("=" * 66)
     print("SIGNAL DATABASE — learning store")
@@ -627,8 +656,9 @@ def main() -> int:
     sub = ap.add_subparsers(dest="cmd")
 
     p_scan = sub.add_parser("scan", help="one-shot signal scan")
-    p_scan.add_argument("--symbol", default=SYMBOL)
-    p_scan.add_argument("--symbols", default=None, help="comma-separated (overrides --symbol)")
+    p_scan.add_argument("--symbol", default=SYMBOL, help="single asset (aliases: BTC, ETH, XAU/GOLD)")
+    p_scan.add_argument("--symbols", default=None,
+                        help=f"comma-separated watchlist (e.g. {','.join(SYMBOLS)}); overrides --symbol")
     p_scan.add_argument("--tf", default=TIMEFRAME)
     p_scan.add_argument("--bars", type=int, default=BARS)
     p_scan.add_argument("--json", action="store_true", help="raw JSON output")
@@ -639,7 +669,7 @@ def main() -> int:
     p_scan.set_defaults(func=cmd_scan)
 
     p_watch = sub.add_parser("watch", help="continuous monitor loop")
-    p_watch.add_argument("--symbol", default=SYMBOL)
+    p_watch.add_argument("--symbol", default=SYMBOL, help="asset to watch (aliases: BTC, ETH, XAU/GOLD)")
     p_watch.add_argument("--tf", default=TIMEFRAME)
     p_watch.add_argument("--bars", type=int, default=BARS)
     p_watch.add_argument("--interval", type=int, default=120)
@@ -650,7 +680,7 @@ def main() -> int:
     p_watch.set_defaults(func=cmd_watch)
 
     p_paper = sub.add_parser("paper", help="monitor approved paper trades; never sends exchange orders")
-    p_paper.add_argument("--symbol", default=None, help="optional symbol filter, e.g. BTCUSDT")
+    p_paper.add_argument("--symbol", default=None, help="optional symbol filter, e.g. BTCUSDT, ETH, XAUUSD")
     p_paper.add_argument("--watch", action="store_true", help="keep monitoring until Ctrl+C")
     p_paper.add_argument("--interval", type=int, default=PAPER_POLL_SECONDS,
                          help="seconds between checks in --watch mode")
@@ -663,7 +693,7 @@ def main() -> int:
     p_src.set_defaults(func=cmd_sources)
 
     p_bt = sub.add_parser("backtest", help="walk-forward grade of engine plans")
-    p_bt.add_argument("--symbol", default=SYMBOL)
+    p_bt.add_argument("--symbol", default=SYMBOL, help="asset (aliases: BTC, ETH, XAU/GOLD)")
     p_bt.add_argument("--tf", default=TIMEFRAME)
     p_bt.add_argument("--bars", type=int, default=BARS)
     p_bt.add_argument("--horizons", default="1,4,24", help="comma-separated hours, e.g. 1,4,24")
@@ -672,11 +702,11 @@ def main() -> int:
     p_bt.set_defaults(func=cmd_backtest)
 
     p_stats = sub.add_parser("stats", help="what the engine has learned (DB + backtests)")
-    p_stats.add_argument("--symbol", default=None)
+    p_stats.add_argument("--symbol", default=None, help="optional asset filter (BTC, ETH, XAU/GOLD)")
     p_stats.set_defaults(func=cmd_stats)
 
     p_rev = sub.add_parser("review", help="list signals awaiting human approval")
-    p_rev.add_argument("--symbol", default=None)
+    p_rev.add_argument("--symbol", default=None, help="optional asset filter (BTC, ETH, XAU/GOLD)")
     p_rev.set_defaults(func=cmd_review)
 
     p_app = sub.add_parser("approve", help="approve a pending signal")
@@ -708,7 +738,7 @@ def main() -> int:
     p_learn.set_defaults(func=cmd_learn)
 
     p_coach = sub.add_parser("coach", help="teaching mode: explain + mentor + personal feedback")
-    p_coach.add_argument("--symbol", default=SYMBOL)
+    p_coach.add_argument("--symbol", default=SYMBOL, help="asset (aliases: BTC, ETH, XAU/GOLD)")
     p_coach.add_argument("--tf", default=TIMEFRAME)
     p_coach.add_argument("--bars", type=int, default=BARS)
     p_coach.add_argument("--term", default=None, help="explain a glossary term (e.g. FVG)")
@@ -718,15 +748,21 @@ def main() -> int:
     p_gl.add_argument("term", nargs="?", default=None)
     p_gl.set_defaults(func=cmd_glossary)
 
+    p_intel = sub.add_parser("intelligence", help="professional AI trading desk report (JSON only)")
+    p_intel.add_argument("--symbol", default=SYMBOL, help="asset (aliases: BTC, ETH, XAU/GOLD)")
+    p_intel.add_argument("--tf", default=TIMEFRAME)
+    p_intel.add_argument("--bars", type=int, default=BARS)
+    p_intel.set_defaults(func=cmd_intelligence)
+
     p_an = sub.add_parser("analyze", help="full human-trader analysis (MTF + context + styles + memory)")
-    p_an.add_argument("--symbol", default=SYMBOL)
+    p_an.add_argument("--symbol", default=SYMBOL, help="asset (aliases: BTC, ETH, XAU/GOLD)")
     p_an.add_argument("--tf", default=TIMEFRAME)
     p_an.add_argument("--bars", type=int, default=BARS)
     p_an.add_argument("--json", action="store_true")
     p_an.set_defaults(func=cmd_analyze)
 
     p_st = sub.add_parser("state", help="show the AI's remembered market state + event log")
-    p_st.add_argument("--symbol", default=SYMBOL)
+    p_st.add_argument("--symbol", default=SYMBOL, help="asset (aliases: BTC, ETH, XAU/GOLD)")
     p_st.add_argument("--tf", default=TIMEFRAME)
     p_st.set_defaults(func=cmd_state)
 
@@ -745,8 +781,8 @@ def main() -> int:
         print(f"🧠 CryptoBrain v{VERSION} — all-in-one dashboard")
         print(f"   open  http://localhost:{DASHBOARD_PORT}   (watch + click approve/reject)")
         print("   everything runs from the dashboard — no commands needed")
-        print("   advanced/automation: scan | watch | paper | analyze | backtest | learn | stats |")
-        print("                        coach | review | sources | state | glossary")
+        print("   advanced/automation: scan | intelligence | watch | paper | analyze | backtest |")
+        print("                        learn | stats | coach | review | sources | state | glossary")
         print("=" * 62)
         serve(make_app(), DASHBOARD_HOST, DASHBOARD_PORT)
         return 0

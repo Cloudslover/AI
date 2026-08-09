@@ -1,9 +1,9 @@
 """engine/mtf.py — multi-timeframe analysis, the way a human trader reads the
 market: higher timeframes set the bias, lower timeframes time the entry.
 
-    HTF (1d, 4h)  →  the "weather" / dominant bias
-    MTF (1h)      →  the session context
-    LTF (15m, 5m) →  the execution timeframe
+    HTF (Monthly, Weekly, Daily, 4h) → the "weather" / dominant bias
+    MTF (1h, 30m)                    → the session context
+    LTF (15m, 5m, 1m)                → the execution timeframe
 
 Each timeframe is analyzed with the same indicator + structure engine, then
 combined into an alignment score (-100..+100), a suggested bias, and a set of
@@ -15,12 +15,17 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 
+from data.symbols import normalize_symbol
 from .indicators import add_all_indicators
 from .structure import analyze_structure
 
-# (timeframe, bars) — bars sized so each frame has enough history
-TF_CONFIG = [("1d", 160), ("4h", 220), ("1h", 240), ("15m", 300), ("5m", 260)]
-WEIGHTS = {"1d": 0.35, "4h": 0.25, "1h": 0.20, "15m": 0.12, "5m": 0.08}
+# (timeframe, bars) — institutional top-down map:
+# Monthly/Weekly/Daily set the macro bias; 4H/1H/30M frame the session;
+# 15M/5M/1M time the execution. Binance monthly interval is "1M".
+TF_CONFIG = [("1M", 80), ("1w", 160), ("1d", 200), ("4h", 240), ("1h", 300),
+             ("30m", 300), ("15m", 300), ("5m", 260), ("1m", 240)]
+WEIGHTS = {"1M": 0.18, "1w": 0.16, "1d": 0.15, "4h": 0.14, "1h": 0.12,
+           "30m": 0.09, "15m": 0.07, "5m": 0.05, "1m": 0.04}
 
 
 def analyze_timeframe(df: pd.DataFrame, tf: str) -> dict:
@@ -77,6 +82,7 @@ def analyze_mtf(symbol: str, client, tfs: list | None = None,
     `prefetched` maps timeframe -> DataFrame already fetched by the caller
     (e.g. the execution timeframe), so it is not re-downloaded.
     """
+    symbol = normalize_symbol(symbol)
     config = config or TF_CONFIG
     prefetched = prefetched or {}
     views: dict[str, dict] = {}
@@ -102,9 +108,9 @@ def analyze_mtf(symbol: str, client, tfs: list | None = None,
     weighted = sum(_score(views.get(tf, {})) * WEIGHTS.get(tf, 0) for tf in WEIGHTS)
     alignment_score = round(weighted * 100, 1)
 
-    htf_tfs = [t for t in ("1d", "4h") if views.get(t, {}).get("available")]
+    htf_tfs = [t for t in ("1M", "1w", "1d", "4h") if views.get(t, {}).get("available")]
     mtd_tf = views.get("1h", {})
-    ltf_tfs = [t for t in ("15m", "5m") if views.get(t, {}).get("available")]
+    ltf_tfs = [t for t in ("30m", "15m", "5m", "1m") if views.get(t, {}).get("available")]
 
     def _bias(tfs: list) -> str:
         s = sum(_score(views[t]) * WEIGHTS[t] for t in tfs)
@@ -124,7 +130,7 @@ def analyze_mtf(symbol: str, client, tfs: list | None = None,
 
     # Key levels carried down from the higher frames
     resistances, supports = [], []
-    for tf in ("1d", "4h", "1h"):
+    for tf in ("1M", "1w", "1d", "4h", "1h"):
         v = views.get(tf, {})
         if not v.get("available"):
             continue
