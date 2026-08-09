@@ -86,7 +86,46 @@ Binance klines → add_all_indicators() → analyze_structure()
 
 ---
 
+## 🛡️ Professional operating mode (the roadmap, built-in)
+
+CryptoBrain now ships the discipline your professional roadmap demands —
+**desk-first, enforced risk, one tested edge at a time**. Everything is
+configurable via `.env`; defaults are conservative.
+
+| Decision | What it does | Control |
+|---|---|---|
+| **Desk-first** | Every scan ends in ONE `decision`: `TRADE BUY/SELL` or `WAIT — NO TRADE`. Desk-vetoed signals never enter the approval queue. Raw engine plans stay visible as research. | `DESK_DEFAULT=true` |
+| **One primary setup family** | Only your chosen family (default: liquidity sweep + trend continuation = Sweep Reversal + OB/FVG Pullback) may become the best signal; everything else is a watch-item until proven. | `PRIMARY_SETUP_FAMILY=sweep_trend_continuation` |
+| **Data-driven R:R** | TP targets come from measured per-setup expectancy (clamped 1.5–4.0R); the old fixed 2.0 gate is now a safety floor. | `TP_RR_MIN/MAX`, `INTELLIGENCE_MIN_RR=1.5` |
+| **Per-asset playbooks** | BTC 4H→1H→15M · ETH gated by BTC bias + ETH/BTC slope · GOLD D1→4H→1H/15M + PDH/PDL + London/NY sessions + US-data no-entry windows. | `brain/playbooks.py` |
+| **Correlation risk** | BTC+ETH = ONE crypto bucket: same-direction duplicates, full buckets and combined risk veto new trades; gold is tracked separately. | `CRYPTO_BUCKET_MAX_TRADES=2` |
+| **Enforced risk limits** | Daily limit → hard block; weekly → reduced activity; drawdown ladder −5%/−8%/−10%. Enforced at the approval button AND the paper runner (`--force` is the conscious override). | `ENFORCE_RISK_LIMITS=true` |
+| **Behavioral no-trade gate** | Angry / tired / revenge / chasing flags close the gate until cleared. | `python main.py tradestate --angry --note "..."` |
+| **Setup-proven gate** | A setup is PROVEN only after ≥100 backtest + ≥20 decided paper samples with positive expectancy; unproven = research-only at student/researcher levels. | `CALIBRATE_MIN_N=100` |
+| **Regime-tagged learning** | Every backtest/paper trade records its market regime; calibration works per `setup × regime`, stats report per regime. | `python main.py stats` |
+| **Business scorecard** | Win rate, avg win/loss, expectancy, profit factor, max drawdown, streaks, rolling 50/100 windows, execution-violation rate. | `python main.py stats` |
+| **Professional journal** | Post-trade fields with "did I follow my system?" as the headline; MAE/MFE recorded per paper trade. | `python main.py journal <scan_id> --followed-rules 1 ...` |
+
+New CLI:
+
+```bash
+python main.py risk          # gate status: daily/weekly/drawdown/progression
+python main.py tradestate --angry --note "tilted"   # close the gate
+python main.py tradestate --clear                   # open it again
+python main.py journal <scan_id> --followed-rules 1 --emotion calm --mistake none
+python main.py journal        # discipline summary (violation rate)
+python main.py sourcetrust discord_group 5 0.3 --note "private signals: context only"
+```
+
+Progression levels (`PROGRESSION=student|researcher|simulator|micro|consistent|scale`)
+map to your Phase-18 ladder and change risk caps + whether unproven setups
+can be approved. Start at `student`; move to `simulator` when you want to
+paper-trade the 100–200 sample dataset that proves your setups.
+
+---
+
 ## 🚀 Quickstart
+
 
 ```bash
 # 1. install
