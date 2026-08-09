@@ -561,17 +561,28 @@ crypto-brain/
 
 ---
 
+## 👤 Ownership
+
+| | |
+|---|---|
+| **Owner** | [Cloudslover](https://github.com/Cloudslover) |
+| **Canonical repo** | https://github.com/Cloudslover/AI |
+| **Companion dashboard** | https://github.com/Cloudslover/CryptoDashboard |
+| **Upstream reference** | https://github.com/cloudshome/AI (read-only history source) |
+
 ## 📤 Publishing to GitHub
 
-The repo is git-initialised and committed locally. To publish:
-
 ```bash
-cd crypto-brain
-git remote add origin https://github.com/YOUR_USERNAME/crypto-brain.git
+# Create an empty public repo named "AI" under Cloudslover, then:
+cd AI
+git remote add origin https://github.com/Cloudslover/AI.git   # already set in this workspace
 git push -u origin main
 ```
 
-(or create a repo on GitHub first — empty, no README — then run the two lines above.)
+This workspace is pre-wired:
+
+* `origin`   → `https://github.com/Cloudslover/AI.git` (push target)
+* `upstream` → `https://github.com/cloudshome/AI.git` (pull latest reference code)
 
 ---
 
