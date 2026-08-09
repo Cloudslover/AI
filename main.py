@@ -500,11 +500,30 @@ def _print_context(ctx: dict) -> None:
 
 
 def cmd_intelligence(args) -> int:
-    """Strict professional desk report: JSON only, capital first."""
+    """Strict professional desk report."""
     from brain.full_pipeline import analyze_full
+    from output.signal_card import format_signal_card
     symbol = _sym(args.symbol)
     payload = analyze_full(symbol, args.tf, args.bars, with_context=True)
-    print(json.dumps(payload.get("intelligence", {}), indent=2, default=str))
+    intel = payload.get("intelligence", {})
+    if getattr(args, "card", False):
+        print(format_signal_card(intel))
+    else:
+        print(json.dumps(intel, indent=2, default=str))
+    return 0
+
+
+def cmd_card(args) -> int:
+    """Print the Institutional AI Signal Card v2.0."""
+    from brain.full_pipeline import analyze_full
+    from output.signal_card import format_signal_card
+    symbol = _sym(args.symbol)
+    payload = analyze_full(symbol, args.tf, args.bars, with_context=True)
+    intel = payload.get("intelligence", {})
+    if args.json:
+        print(json.dumps(intel.get("signal_card", intel), indent=2, default=str))
+    else:
+        print(format_signal_card(intel))
     return 0
 
 
@@ -748,11 +767,19 @@ def main() -> int:
     p_gl.add_argument("term", nargs="?", default=None)
     p_gl.set_defaults(func=cmd_glossary)
 
-    p_intel = sub.add_parser("intelligence", help="professional AI trading desk report (JSON only)")
+    p_intel = sub.add_parser("intelligence", help="professional AI trading desk report (JSON or card)")
     p_intel.add_argument("--symbol", default=SYMBOL, help="asset (aliases: BTC, ETH, XAU/GOLD)")
     p_intel.add_argument("--tf", default=TIMEFRAME)
     p_intel.add_argument("--bars", type=int, default=BARS)
+    p_intel.add_argument("--card", action="store_true", help="render institutional terminal signal card")
     p_intel.set_defaults(func=cmd_intelligence)
+
+    p_card = sub.add_parser("card", help="render Institutional AI Signal Card v2.0")
+    p_card.add_argument("--symbol", default=SYMBOL, help="asset (aliases: BTC, ETH, XAU/GOLD)")
+    p_card.add_argument("--tf", default=TIMEFRAME)
+    p_card.add_argument("--bars", type=int, default=BARS)
+    p_card.add_argument("--json", action="store_true", help="output card as raw JSON")
+    p_card.set_defaults(func=cmd_card)
 
     p_an = sub.add_parser("analyze", help="full human-trader analysis (MTF + context + styles + memory)")
     p_an.add_argument("--symbol", default=SYMBOL, help="asset (aliases: BTC, ETH, XAU/GOLD)")
