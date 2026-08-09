@@ -98,22 +98,39 @@ class SignalDB:
     def __init__(self, path: str | Path | None = None):
         self.path = Path(path) if path else Path(DB_PATH)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        # Thread-safe: the dashboard's watchdog thread, Flask request threads
-        # and auto-refresh all write to this DB concurrently. WAL mode +
-        # busy_timeout + check_same_thread=False prevent periodic
-        # "database is locked" crashes on busy machines.
-        self.conn = sqlite3.connect(str(self.path), timeout=15,
+        # Thread-safe connection with 30s timeout and WAL pragma
+        self.conn = sqlite3.connect(str(self.path), timeout=30.0,
                                     check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA busy_timeout=15000")
-        self.conn.execute("PRAGMA synchronous=NORMAL")
-        self.conn.executescript(SCHEMA)
-        self._migrate()
-        self.conn.commit()
+        self._init_db()
 
-    def close(self) -> None:
-        self.conn.close()
+    def _init_db(self) -> None:
+        """Initialize pragmas and schema with retry for concurrent processes."""
+        for attempt in range(10):
+            try:
+                self.conn.execute("PRAGMA journal_mode=WAL")
+                self.conn.execute("PRAGMA busy_timeout=30000")
+                self.conn.execute("PRAGMA synchronous=NORMAL")
+                self.conn.executescript(SCHEMA)
+                self._migrate()
+                self.conn.commit()
+                break
+            except sqlite3.OperationalError as exc:
+                if "locked" in str(exc).lower() and attempt < 9:
+                    time.sleep(0.05 * (attempt + 1))
+                else:
+                    raise
+
+    def _retry_write(self, fn, max_attempts: int = 8):
+        """Execute a write transaction with automatic retry on locked database."""
+        for attempt in range(max_attempts):
+            try:
+                return fn()
+            except sqlite3.OperationalError as exc:
+                if "locked" in str(exc).lower() and attempt < max_attempts - 1:
+                    time.sleep(0.05 * (attempt + 1))
+                else:
+                    raise
 
     # ── migration ────────────────────────────────────────────────────────
     def _migrate(self) -> None:
