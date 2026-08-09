@@ -12,7 +12,6 @@ discretionary trader thinks:
 >
 > *IF price pulls back to the bullish order block AND rejects → BUY.*
 
-It is a **companion / evolution** of the [Cloudslover/CryptoDashboard](https://github.com/Cloudslover/CryptoDashboard)
 market dashboard: that project is the *situational awareness screen* (macro,
 news, funding, order-flow, LLM brief), this project is the *signal generation
 brain* (indicators → structure → scoring → JSON signals + conditional plans),
