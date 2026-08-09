@@ -322,30 +322,59 @@ function render(d){
     </div>${decideBtns}`, true);
 
   const intel=d.intelligence||{};
+  const scard=intel.signal_card||{};
   if(intel.asset){
     const fchecks=intel.trade_filter||{};
-    html += card('AI TRADING DESK — professional filter', `
-      <div class="flex" style="margin-bottom:6px">
-        <span class="pill ${cls(intel.signal)}">${esc(intel.signal)}</span>
-        <b>${esc(intel.asset)} · ${esc(intel.timeframe)}</b>
-        <span class="badge">confidence ${intel.confidence??0}%</span>
-        <span class="badge">RR ${esc(intel.risk_reward||'0')}</span>
-        <span class="badge">risk ${esc(intel.risk||'')}</span>
+    const tpl=scard.tp_ladder||[];
+    const tplHtml=tpl.length ? tpl.map(t=>`<tr><td><b>${esc(t.target)}</b></td><td class="mono">$${fmt(t.price)}</td><td style="color:var(--green)">+${fmt(t.gain_pct)}%</td><td>${t.allocation_pct}% size</td><td class="note">${esc(t.management||'')}</td></tr>`).join('') : '';
+    const kelly=intel.kelly_criterion||{};
+
+    html += card('INSTITUTIONAL AI SIGNAL CARD v2.0 — Enterprise Alpha Intelligence', `
+      <div class="flex" style="margin-bottom:10px;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:8px">
+        <div class="flex">
+          <span class="pill ${cls(intel.signal)}">${esc(intel.signal)}</span>
+          <b>${esc(intel.asset)} · ${esc(intel.timeframe)}</b>
+          <span class="badge" style="background:var(--blue);color:#fff;font-weight:700">Grade ${esc(intel.trade_quality_grade||'N/A')}</span>
+        </div>
+        <div class="flex">
+          <span class="badge" style="background:rgba(59,130,246,.15);color:var(--blue)">IPS ${intel.institutional_probability_score??intel.confidence??0}/100</span>
+          <span class="badge" style="background:rgba(34,197,94,.15);color:var(--green)">AI Confidence ${scard.ai_confidence_index||(intel.confidence+'%')} ${scard.confidence_delta||''}</span>
+        </div>
       </div>
-      <div class="kv">
-        <b>Trend</b><span>${esc(intel.trend)} · ${esc(intel.market_structure)}</span>
-        <b>Entry</b><span class="mono">${(intel.entry||[]).map(fmt).join(', ')||'—'}</span>
-        <b>Stop</b><span class="mono">${fmt(intel.stop_loss)}</span>
-        <b>Targets</b><span class="mono">${(intel.take_profit||[]).map(fmt).join(', ')||'—'}</span>
-        <b>News</b><span>${esc(intel.news)}</span>
-        <b>Liquidity</b><span>${esc(intel.liquidity)}</span>
-        <b>SMC</b><span>OB ${esc(intel.order_block)} · FVG ${esc(intel.fair_value_gap)}</span>
-        <b>Decision</b><span>${esc(intel.self_review?.capital_preservation_decision||'')}</span>
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-bottom:10px">
+        <div class="kv">
+          <b>Entry Zone</b><span class="mono" style="color:var(--txt);font-weight:700">${esc(intel.entry_zone||'N/A')}</span>
+          <b>Stop Loss</b><span class="mono" style="color:var(--red)">${esc(scard.stop_loss_display||fmt(intel.stop_loss))}</span>
+          <b>Risk:Reward</b><span><b>${esc(intel.risk_reward||'1:2.0')}</b></span>
+          <b>Hold Time</b><span>${esc(intel.expected_hold_time||'4–8 Hours')}</span>
+          <b>Active Until</b><span class="note">${esc(intel.active_until||'N/A')}</span>
+        </div>
+        <div class="kv">
+          <b>Market Regime</b><span>${esc(intel.regime?.label||intel.trend)}</span>
+          <b>Liquidity Trap</b><span>${intel.regime?.trap_detected?'<span class="err">⚠️ Trap / Fakeout Risk</span>':'<span class="okc">✓ Clean / No Trap</span>'}</span>
+          <b>Order Flow SMC</b><span>OB: ${esc(intel.order_block)} · FVG: ${esc(intel.fair_value_gap)}</span>
+          <b>Kelly Sizing</b><span>${kelly.recommended_risk_pct?kelly.recommended_risk_pct+'% risk ($'+fmt(kelly.recommended_risk_amt)+')':'Fixed 1.0%'} · ${esc(kelly.recommended_leverage||'1x-3x')}</span>
+          <b>Capital Preserv.</b><span>${esc(intel.self_review?.capital_preservation_decision||'Capital protected')}</span>
+        </div>
       </div>
-      <div class="note" style="margin-top:6px">${(intel.reason||[]).slice(0,6).map(r=>'• '+esc(r)).join('<br>')}</div>
-      <details style="margin-top:8px"><summary>scenarios + filter checks</summary>
-        <div class="note" style="margin-top:6px">A: ${esc(intel.scenario_A)}<br>B: ${esc(intel.scenario_B)}<br>C: ${esc(intel.scenario_C)}</div>
-        <table style="margin-top:6px"><tr><th>Filter</th><th>OK</th><th>Value</th></tr>${Object.entries(fchecks).map(([k,v])=>`<tr><td>${esc(k)}</td><td style="color:${v.ok?'var(--green)':'var(--red)'}">${v.ok?'✓':'✗'}</td><td>${esc(v.value??'')}</td></tr>`).join('')}</table>
+      ${tplHtml ? `<div style="margin:10px 0"><b>Smart Take-Profit Ladder</b><table style="margin-top:4px"><tr><th>Target</th><th>Price</th><th>Gain</th><th>Allocation</th><th>Action / Management</th></tr>${tplHtml}</table></div>` : ''}
+      <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px;margin-top:10px">
+        <div style="background:#0e1524;padding:10px;border-radius:8px;border:1px solid var(--line)">
+          <b style="color:var(--green)">Why AI Took This Trade:</b>
+          <div class="note" style="margin-top:6px">${(scard.why_ai_took_trade||intel.reason||[]).slice(0,4).map(r=>'• '+esc(r)).join('<br>')}</div>
+        </div>
+        <div style="background:#0e1524;padding:10px;border-radius:8px;border:1px solid var(--line)">
+          <b style="color:var(--red)">Invalidation Conditions:</b>
+          <div class="note" style="margin-top:6px">${(scard.invalidation_conditions||[]).slice(0,3).map(r=>'• '+esc(r)).join('<br>')}</div>
+        </div>
+      </div>
+      <div style="background:#0e1524;padding:10px;border-radius:8px;border:1px solid var(--line);margin-top:10px">
+        <b>Alternative Scenario:</b>
+        <div class="note" style="margin-top:4px">${esc(scard.alternative_scenario||intel.scenario_B||'')}</div>
+      </div>
+      <details style="margin-top:8px"><summary>Desk Filter Checks & Full Scenarios</summary>
+        <div class="note" style="margin-top:6px">Scenario A: ${esc(intel.scenario_A)}<br>Scenario B: ${esc(intel.scenario_B)}<br>Scenario C: ${esc(intel.scenario_C)}</div>
+        <table style="margin-top:6px"><tr><th>Filter Check</th><th>Status</th><th>Value</th></tr>${Object.entries(fchecks).map(([k,v])=>`<tr><td>${esc(k)}</td><td style="color:${v.ok?'var(--green)':'var(--red)'}">${v.ok?'✓ PASS':'✗ FAIL'}</td><td>${esc(v.value??'')}</td></tr>`).join('')}</table>
       </details>`, true);
   }
 
