@@ -16,6 +16,7 @@ import time
 from typing import Optional
 
 from config import SYMBOL, TIMEFRAME, BARS, MIN_CONFIDENCE, DEFAULT_RISK_REWARD
+from data.symbols import normalize_symbol
 from data.binance_client import BinanceClient
 from engine.mtf import analyze_mtf, analyze_timeframe
 from engine.signal_engine import analyze_frame
@@ -24,6 +25,7 @@ import brain.context as context_mod
 from .calibrator import apply_calibration as _cal_apply
 from .state_memory import SignalMemory
 from .styles import classify_styles
+from .trading_intelligence import build_intelligence
 
 
 def _load_calibration(db=None) -> dict:
@@ -41,6 +43,7 @@ def analyze_full(symbol: str = SYMBOL, timeframe: str = TIMEFRAME,
     """Run the complete pipeline. Returns a dict with keys:
     signal, plans, snapshot, styles, mtf, context, memory, market_context,
     validation, analyzed_at."""
+    symbol = normalize_symbol(symbol)
     client = client or BinanceClient()
     t0 = time.time()
 
@@ -81,6 +84,10 @@ def analyze_full(symbol: str = SYMBOL, timeframe: str = TIMEFRAME,
         payload["memory"] = mem_result
         payload["memory_events"] = mem.history(symbol, timeframe, limit=12)
         memory = mem_result
+
+    # 6) professional desk-style intelligence report (strict filters:
+    #    confidence >=80, RR >=2, no major conflict/news risk)
+    payload["intelligence"] = build_intelligence(payload, df=df)
 
     payload["validation"] = validate_output(payload)
     payload["analyzed_at"] = int(time.time() * 1000)

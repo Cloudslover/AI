@@ -29,6 +29,7 @@ import numpy as np
 import pandas as pd
 
 from config import BACKTEST_HORIZONS, BACKTEST_MIN_BARS, BACKTEST_STEP
+from data.symbols import normalize_symbol
 from data.binance_client import TIMEFRAME_TO_MS
 from engine.signal_engine import analyze_frame
 
@@ -178,6 +179,7 @@ def run_backtest(df: pd.DataFrame, symbol: str = "BTCUSDT", timeframe: str = "15
                  step: int = BACKTEST_STEP,
                  min_confidence: int = 55) -> dict:
     """Walk the engine over history and grade every plan at every horizon."""
+    symbol = normalize_symbol(symbol)
     horizons = horizons or BACKTEST_HORIZONS
     tf_ms = TIMEFRAME_TO_MS.get(timeframe, 900_000)
     df = df.reset_index(drop=True).copy()

@@ -5,14 +5,17 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
+from data.symbols import DEFAULT_WATCHLIST, normalize_symbol, parse_symbol_list
+
 load_dotenv()
 
-VERSION = "1.8.0"
+VERSION = "2.0.0"
 
 ROOT = Path(__file__).parent
 
 # ── Market data ──────────────────────────────────────────────────────────
-SYMBOL = os.getenv("SYMBOL", "BTCUSDT")
+SYMBOL = normalize_symbol(os.getenv("SYMBOL", "BTCUSDT"))
+SYMBOLS = parse_symbol_list(os.getenv("SYMBOLS"), default=DEFAULT_WATCHLIST)
 TIMEFRAME = os.getenv("TIMEFRAME", "15m")
 BARS = int(os.getenv("BARS", "500"))
 
@@ -26,6 +29,18 @@ BINANCE_FUTURES_HOSTS = ["https://fapi.binance.com", "https://fapi.binance.com"]
 MIN_CONFIDENCE = int(os.getenv("MIN_CONFIDENCE", "55"))
 DEFAULT_RISK_REWARD = float(os.getenv("DEFAULT_RISK_REWARD", "2.0"))
 MAX_RISK_PCT = float(os.getenv("MAX_RISK_PCT", "1.0"))
+
+# ── Institutional intelligence / risk desk ───────────────────────────────
+# Stricter filters used by the AI Trading Intelligence System.  These do not
+# remove the lower-threshold raw plans; they decide whether a professional
+# desk-style report is allowed to say BUY/SELL or must protect capital with
+# NO TRADE.
+INTELLIGENCE_MIN_CONFIDENCE = int(os.getenv("INTELLIGENCE_MIN_CONFIDENCE", "80"))
+INTELLIGENCE_MIN_RR = float(os.getenv("INTELLIGENCE_MIN_RR", "2.0"))
+ACCOUNT_BALANCE = float(os.getenv("ACCOUNT_BALANCE", "0") or 0)  # optional; enables position sizing
+RISK_PCT = max(0.0, min(MAX_RISK_PCT, float(os.getenv("RISK_PCT", str(MAX_RISK_PCT)))))
+MAX_DAILY_LOSS_PCT = float(os.getenv("MAX_DAILY_LOSS_PCT", "3.0"))
+MAX_WEEKLY_LOSS_PCT = float(os.getenv("MAX_WEEKLY_LOSS_PCT", "6.0"))
 
 # ── CryptoDada connector ─────────────────────────────────────────────────
 CRYPTODADA_MODE = os.getenv("CRYPTODADA_MODE", "auto")          # auto|api|browser

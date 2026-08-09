@@ -1,6 +1,6 @@
 # 🧠 CryptoBrain — AI Trading Brain (Signal Engine)
 
-**Multi-source, multi-indicator, conditional-signal engine for crypto futures.**
+**Multi-source, multi-indicator, conditional-signal engine for BTC, ETH, and XAUUSD/GOLD (plus any Binance USDT pair).**
 
 CryptoBrain is the engine behind the "AI Brain Agent Assistant" concept: instead
 of following one indicator (or copying one signal service), it reads **many
@@ -28,6 +28,7 @@ with connectors for your **private CryptoDada website** and **Discord group**.
 | **Structure engine (ICT/SMC)** | Fractal swings, **BOS / CHOCH**, **order blocks**, **fair value gaps** (filled/unfilled), **liquidity sweeps**, equal highs/lows, premium/discount zone |
 | **Scoring brain** | Weighted condition scoring (Trend +15, Structure +15, OB/FVG +20, Liquidity +15, Volume +10, Divergence +10, Momentum +10, Location +5 = 100) → `HIGH / MEDIUM / LOW / NO TRADE` |
 | **Multi-condition plans** | Immediate entry, pullback at OB/FVG, breakout, sweep-reversal, FVG retest — each with entry/SL/TP ladder, R:R, confidence, and a human-readable IF condition |
+| **AI Trading Intelligence System** | Institutional desk report for BTC / ETH / XAUUSD: strict `NO TRADE` filter when confidence <80%, RR <1:2, HTF conflict, volatile/sideways conditions, or news risk; includes scenarios, risk management, IF/THEN logic, trade management and self-review. |
 | **JSON signals** | Exact schema requested — `signal_id`, `timestamp`, `asset`, `action`, `entry`, `stop_loss`, `take_profit`, `risk_reward`, `confidence`, `timeframe`, `reason` — plus validation |
 | **CryptoDada website** | Connector for the private membership site (volume-spike screener, market radar, analyst notes, historical signals) via hidden-API probe or Playwright login |
 | **Discord group** | Channel reader (bot/self token) that parses analyst "market update" posts into structured bias notes + sentiment; webhook push for outbound alerts |
@@ -42,7 +43,7 @@ with connectors for your **private CryptoDada website** and **Discord group**.
 | **Coach (teaching)** | `python main.py coach` explains *why* the engine said what it said, mentors you through the top setup step-by-step, gives personal feedback on your own approvals/rejections, and ships a full trading glossary. |
 | **CI** | GitHub Actions runs the offline test suite on every push |
 | **Web dashboard** | **`python main.py`** opens the all-in-one dashboard: live signal + lifecycle badge, **candlestick chart**, **multi-timeframe table**, **what-the-market-offers styles grid**, **context panel** (news/macro/geopolitics/cycle/social/equities), **state memory panel** (signal stability), plans, human approval queue, a one-click **paper-trading runner** panel, recent signals, learning dashboard, coach, LLM narrative — auto-refreshing. |
-| **Human-like thinking** | **Multi-timeframe** (1d/4h/1h/15m/5m → HTF bias + LTF execution + alignment score), **full market context** (fear&greed, BTC dominance, S&P/Nasdaq/DXY, macro calendar FOMC/CPI/NFP, halving cycle, geopolitics, influencer/social pulse), **trading-style signals** (Scalp/Day/Swing/Momentum/Position — "what the market provides, we take"), and **state memory** so signals only change when the market state changes — no random 30s signals. |
+| **Human-like thinking** | **Multi-timeframe** (Monthly/Weekly/Daily/4H/1H/30M/15M/5M/1M → HTF bias + LTF execution + alignment score), **full market context** (fear&greed, BTC dominance, S&P/Nasdaq/DXY, macro calendar FOMC/CPI/NFP, halving cycle, geopolitics, influencer/social pulse), **trading-style signals** (Scalp/Day/Swing/Momentum/Position — "what the market provides, we take"), and **state memory** so signals only change when the market state changes — no random 30s signals. |
 
 ---
 
@@ -80,7 +81,8 @@ with connectors for your **private CryptoDada website** and **Discord group**.
 Binance klines → add_all_indicators() → analyze_structure()
      → build_snapshot() → score_bullish() / score_bearish()
      → build_plans()    → build_best_signal()
-     → JSON {signal, plans, snapshot, market_context, validation}
+     → build_intelligence() strict desk filter
+     → JSON {signal, plans, intelligence, snapshot, market_context, validation}
 ```
 
 ---
@@ -93,36 +95,43 @@ pip install -r requirements.txt
 
 # 2. ALL-IN-ONE DASHBOARD — watch everything + click to decide (no commands needed)
 python main.py              # opens http://localhost:8050
-#    everything runs from the dashboard: live signal, chart, MTF, styles,
-#    context, approval queue, history, coach, and one-click
+#    everything runs from the dashboard: BTC/ETH/XAU quick buttons, live
+#    signal, chart, MTF, styles, context, approval queue, history, coach, and one-click
 #    "⚡ Learn now" / "▶ Quick backtest + learn" buttons.
 #    CLI is only for automation/advanced use.
 
 # 3. one-shot scan (live Binance data, no keys needed)
 python main.py scan --symbol BTCUSDT --tf 15m --json
 
-# 4. multi-symbol
-python main.py scan --symbols BTCUSDT,ETHUSDT,SOLUSDT --tf 1h
+# 3b. professional AI trading-desk report (JSON only; capital first)
+python main.py intelligence --symbol XAUUSD --tf 15m
 
-# 5. continuous watch + notify (once you configure .env)
-python main.py watch --symbol BTCUSDT --interval 120 --notify
+# 4. multi-asset watchlist (BTC + ETH + XAU/GOLD)
+python main.py scan --symbols BTCUSDT,ETHUSDT,XAUUSD --tf 1h
 
-# 6. backtest: grade every plan at +1h/+4h/+24h and store the outcomes
+# 5. scan a single added market (aliases work)
+python main.py scan --symbol ETH --tf 15m
+python main.py scan --symbol XAUUSD --tf 1h    # XAU/GOLD routes to PAXGUSDT spot candles
+
+# 6. continuous watch + notify (once you configure .env)
+python main.py watch --symbol ETH --interval 120 --notify
+
+# 7. backtest: grade every plan at +1h/+4h/+24h and store the outcomes
 python main.py backtest --symbol BTCUSDT --tf 15m --bars 300 --horizons 1,4,24 --save
 
-# 7. what the engine has learned (scans + backtest win-rates)
+# 8. what the engine has learned (scans + backtest win-rates)
 python main.py stats
 
-# 8. human approval gate — signals wait for YOUR yes/no
+# 9. human approval gate — signals wait for YOUR yes/no
 python main.py review                # list signals awaiting approval
 python main.py approve 42 --note "clean setup"
 python main.py reject 42 --note "chasing entry"
 python main.py signal 42             # full detail + lifecycle trail
 
-# 9. PAPER TRADING — safely monitor approved signals; NO real orders are sent
+# 10. PAPER TRADING — safely monitor approved signals; NO real orders are sent
 python main.py paper                 # one safe live-market check now
 python main.py paper --watch         # keep checking every 30s (Ctrl+C to stop)
-python main.py paper --watch --interval 60 --symbol BTCUSDT
+python main.py paper --watch --interval 60 --symbol XAUUSD
 # Immediate plans paper-fill at their stated entry after approval.
 # Conditional plans wait until a live candle reaches the planned entry.
 # SL / TP1 closes are recorded automatically in SQLite and feed `learn`.
@@ -131,22 +140,54 @@ python main.py paper --watch --interval 60 --symbol BTCUSDT
 python main.py execute 42            # mark an approved trade as executed
 python main.py close 42              # manually close it / record your own outcome note
 
-# 10. FULL human-trader analysis (MTF + context + styles + memory)
-python main.py analyze --symbol BTCUSDT --tf 15m
+# 11. FULL human-trader analysis (MTF + context + styles + memory)
+python main.py analyze --symbol XAUUSD --tf 1h
 
-# 11. what the AI remembers about this market (state memory)
-python main.py state --symbol BTCUSDT --tf 15m
+# 12. what the AI remembers about this market (state memory)
+python main.py state --symbol ETH --tf 15m
 
-# 12. self-improvement — recalibrate from backtests + decided paper trades
+# 13. self-improvement — recalibrate from backtests + decided paper trades
 python main.py learn
 
-# 13. coach — teaching mode
-python main.py coach                 # explain + mentor + personal feedback
+# 14. coach — teaching mode
+python main.py coach --symbol ETH    # explain + mentor + personal feedback
 python main.py glossary FVG          # quick term lookup
 
-# 14. run tests
+# 15. run tests
 python -m pytest tests/ -q
 ```
+
+### Supported markets / aliases
+
+The default watchlist now includes **BTC**, **ETH**, and **XAUUSD/GOLD**:
+
+| Input alias | Canonical signal asset | Candle source |
+|---|---|---|
+| `BTC`, `BTCUSDT` | `BTCUSDT` | Binance spot/futures BTCUSDT |
+| `ETH`, `ETHUSDT` | `ETHUSDT` | Binance spot/futures ETHUSDT |
+| `XAUUSD`, `XAU`, `GOLD`, `GOLDUSDT`, `PAXGUSDT` | `XAUUSD` | Binance spot `PAXGUSDT` (PAX Gold proxy) |
+
+XAUUSD/Gold has no Binance futures/funding context in this project, so the dashboard
+shows its provider as `PAXGUSDT` and marks futures metrics as unavailable while
+all indicator, structure, MTF, backtest, approval, and paper-trading flows keep
+working with the user-facing asset name `XAUUSD`.
+
+### AI Trading Intelligence System
+
+`python main.py intelligence --symbol XAUUSD --tf 15m` returns **only JSON** in
+the professional desk style: trend, structure, SMC, supply/demand, price action,
+indicator confirmation, fundamentals/sentiment, scenarios, IF/THEN logic,
+trade management, position-size estimate, and an explicit self-review.  It is
+stricter than the raw signal engine and will return `"signal":"NO TRADE"` when
+capital-preservation filters fail:
+
+* confidence below `INTELLIGENCE_MIN_CONFIDENCE` (default 80%)
+* RR below `INTELLIGENCE_MIN_RR` (default 1:2)
+* high-impact macro/news risk, sideways/volatile market, or HTF contradiction
+* insufficient market data
+
+Set `ACCOUNT_BALANCE`, `RISK_PCT`, `MAX_DAILY_LOSS_PCT`, and
+`MAX_WEEKLY_LOSS_PCT` in `.env` to include sizing/risk limits in the report.
 
 **Offline demo** (no network): use the committed sample dataset —
 
@@ -272,7 +313,7 @@ the output is never empty.
 ## 🧪 Tests
 
 ```bash
-python -m pytest tests/ -q      # 82 tests, fully offline (synthetic data)
+python -m pytest tests/ -q      # 90 tests, fully offline (synthetic data)
 ```
 
 Covers: indicator math & no-look-ahead, structure detection (BOS/CHOCH, FVG,
@@ -409,10 +450,10 @@ CREATED ─▶ PENDING_REVIEW ─▶ APPROVED ─▶ EXECUTED ─▶ CLOSED (out
 
 **How it thinks like a trader:**
 
-1. **Multi-timeframe** (`engine/mtf.py`) — reads 1d → 4h → 1h → 15m → 5m like a
-   trader: the higher frames set the **bias**, the lower frames **time the
-   entry**. Output: HTF/LTF bias, an alignment score (-100..+100), and support/
-   resistance carried down from the higher frames.
+1. **Multi-timeframe** (`engine/mtf.py`) — reads Monthly → Weekly → Daily → 4H →
+   1H → 30M → 15M → 5M → 1M like a trader: the higher frames set the **bias**,
+   the lower frames **time the entry**. Output: HTF/LTF bias, an alignment score
+   (-100..+100), and support/resistance carried down from the higher frames.
 2. **Market context** (`brain/context.py`) — everything that moves BTC:
    fear & greed, BTC/ETH dominance, S&P500 / Nasdaq / DXY / gold, macro
    calendar (FOMC, CPI, NFP — flags high-impact events within 48h), the
