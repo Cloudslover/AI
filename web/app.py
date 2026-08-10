@@ -24,7 +24,10 @@ Endpoints
   GET /api/paper    paper-trade state, outcomes, and runner statistics
   POST /api/paper/run  enroll/check approved paper trades once
   GET /api/coach    explain + mentor + personal feedback
-  GET /api/health   health check
+  GET /api/health   full system health (data feeds, DB, risk gate, MCP, LLM)
+  GET /api/agents   desk morning briefing (every watchlist asset + gate + queue)
+  GET /api/mcp      MCP server availability + tools
+  POST /api/ask     natural-language question to the desk
 """
 from __future__ import annotations
 
@@ -519,6 +522,12 @@ function render(d){
     <div id="diag" class="note" style="margin-top:6px"></div>`);
   html += card('HUMAN APPROVAL QUEUE', '<div id="queue">loading…</div>');
   html += card('RISK & DISCIPLINE GATE', '<div id="riskgate">loading…</div>', true);
+  html += card('SYSTEM HEALTH', '<div id="health">loading…</div>');
+  html += card('AGENTS — MORNING BRIEFING', '<div id="agents">loading…</div>', true);
+  html += card('MCP SERVER', '<div id="mcp">loading…</div>');
+  html += card('ASK THE DESK', `<div class="flex"><input id="askq" placeholder="ask the desk… e.g. is the risk gate open? / scan BTC / what's pending?" style="flex:1" onkeydown="if(event.key==='Enter')askDesk()">
+    <button class="rowbtn" onclick="askDesk()">Ask</button></div>
+    <div id="askout" class="note" style="white-space:pre-wrap;margin-top:8px"></div>`, true);
   html += card('PAPER TRADING — LIVE OUTCOME RUNNER', '<div id="paper">loading…</div>', true);
   html += card('RECENT SIGNALS', '<div id="hist">loading…</div>');
   html += card('LEARNING — backtest & calibration', '<div id="learn">loading…</div>', true);
@@ -529,7 +538,7 @@ function render(d){
 
   document.getElementById('app').innerHTML = html;
   loadPending(); loadPaper(); loadHistory(); loadLearning(); loadSources();
-  loadRiskGate();
+  loadRiskGate(); loadHealth(); loadAgents(); loadMcp();
   const symE=document.getElementById('sym'); const tfE=document.getElementById('tf');
   loadChart((symE?symE.value:'BTCUSDT').toUpperCase(), tfE?tfE.value:'15m');
 }
@@ -716,6 +725,75 @@ async function runPaper(){
     if(m) m.textContent=d.ok?`✓ checked ${d.run.checked||0}; entries ${d.run.opened||0}; closed ${d.run.closed||0}`:'error: '+(d.error||'');
   }catch(e){ if(m) m.textContent='error: '+e; }
   loadPaper(); loadHistory(); loadPending(); loadLearning();
+}
+
+async function loadHealth(){
+  const el=document.getElementById('health'); if(!el) return;
+  try{
+    const d=await (await fetch('/api/health')).json();
+    if(d.error){ el.innerHTML='<span class="err">'+esc(d.error)+'</span>'; return; }
+    const dm=d.data||{}, db_=d.database||{}, gate=d.risk_gate||{}, prog=gate.progression||{},
+          probes=Object.entries(dm.probe||{});
+    el.innerHTML=`<div class="kv">
+      <b>Mode</b><span>${esc(dm.mode||'?')}${dm.live?'':' <span class="note">(demo)</span>'}</span>
+      <b>Database</b><span>${db_.ok?'ok':'<span class="err">FAIL</span>'} · ${db_.scans||0} scans · ${db_.backtest_samples||0} bt · ${db_.paper_samples||0} paper</span>
+      <b>Risk gate</b><span class="${gate.allowed?'okc':'err'}">${gate.allowed?'OPEN':'CLOSED'}</span>
+      <b>Progression</b><span>${esc(prog.level||'?')}</span>
+      <b>Learning</b><span>${(d.learning||{}).calibration_entries||0} entries · ${((d.learning||{}).proven_setups||[]).length} proven</span>
+      <b>MCP</b><span>${d.mcp&&d.mcp.available?'ready':'not installed'}</span>
+      <b>LLM</b><span>${d.llm&&d.llm.enabled?'enabled':'off'}</span></div>
+      ${probes.length?`<div class="note" style="margin-top:6px">data feeds: ${probes.map(([s,p])=>`${esc(s)} ${p.ok?'✓':'✗'}`).join(' · ')}</div>`:''}
+      <div class="note" style="margin-top:4px">Same report as <code>python main.py agent health</code>.</div>`;
+  }catch(e){ el.innerHTML='<span class="err">'+esc(e)+'</span>'; }
+}
+
+async function loadAgents(){
+  const el=document.getElementById('agents'); if(!el) return;
+  el.innerHTML='<span class="muted">building briefing…</span>';
+  try{
+    const d=await (await fetch('/api/agents')).json();
+    if(d.error){ el.innerHTML='<span class="err">'+esc(d.error)+'</span>'; return; }
+    const rows=(d.assets||[]).map(a=>{
+      const side=a.desk_action||a.action||'';
+      const mark=(side==='BUY'||side==='SELL')?(a.blocked_by&&a.blocked_by.length?'⚠':'✓'):'·';
+      const conf=a.confidence_pct!=null?a.confidence_pct+'%':(a.confidence||'—');
+      const vetoes=(a.blocked_by||[]).map(esc).join('; ');
+      return `<div class="row"><span>${mark} <b>${esc(a.symbol)}</b> <span class="${cls(side)}">${side}</span> conf=${conf} ${a.entry?'@ '+fmt(a.entry):''}</span>
+        <span class="note">${esc((a.reason||'').slice(0,60))}${vetoes?'<br><span class="err">✗ '+vetoes+'</span>':''}</span></div>`;
+    }).join('');
+    const gate=d.risk_gate||{}, prog=gate.progression||{};
+    el.innerHTML=`${rows||'<span class="muted">no assets</span>'}
+      <div class="note" style="margin-top:6px">Risk gate ${gate.allowed?'OPEN':'CLOSED'} · progression ${esc(prog.level||'?')} · ${d.pending_reviews||0} pending · ${(d.open_exposure||[]).length} open paper trade(s)</div>
+      <div class="note" style="white-space:pre-wrap;margin-top:6px">${esc(d.narrative||'')}</div>
+      <div class="note" style="margin-top:4px">CLI: <code>python main.py agent morning</code>.</div>`;
+  }catch(e){ el.innerHTML='<span class="err">'+esc(e)+'</span>'; }
+}
+
+async function loadMcp(){
+  const el=document.getElementById('mcp'); if(!el) return;
+  try{
+    const d=await (await fetch('/api/mcp')).json();
+    if(d.error){ el.innerHTML='<span class="err">'+esc(d.error)+'</span>'; return; }
+    el.innerHTML=`<div class="kv">
+      <b>Server</b><span class="${d.available?'okc':'err'}">${d.available?'ready':'not installed'}</span>
+      <b>Tools</b><span>${d.count||0}</span>
+      <b>Transport</b><span>stdio (JSON-RPC 2.0)</span></div>
+      <div class="note" style="margin-top:6px">${esc(d.note||'')}</div>
+      <div class="note" style="margin-top:6px">${(d.tools||[]).map(t=>'<code>'+esc(t)+'</code>').join(' · ')}</div>`;
+  }catch(e){ el.innerHTML='<span class="err">'+esc(e)+'</span>'; }
+}
+
+async function askDesk(){
+  const q=document.getElementById('askq'); const out=document.getElementById('askout');
+  const question=(q?q.value:'').trim(); if(!question) return;
+  if(out) out.innerHTML='<span class="muted">thinking…</span>';
+  try{
+    const d=await (await fetch('/api/ask',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({question})})).json();
+    const lines=(d.answer||[]);
+    if(out) out.innerHTML=(lines.length?lines.map(l=>esc(l)).join('<br>'):esc(d.error||'no answer'))+
+      (d.error?'<br><span class="err">'+esc(d.error)+'</span>':'');
+  }catch(e){ if(out) out.innerHTML='<span class="err">'+esc(e)+'</span>'; }
 }
 
 async function loadHistory(){
@@ -1228,7 +1306,53 @@ def make_app() -> Flask:
 
     @app.get("/api/health")
     def health():
-        return jsonify({"ok": True})
+        """Full system health — same report as `python main.py agent health`."""
+        try:
+            from brain.agent import health_report
+            return jsonify(health_report())
+        except Exception as exc:  # never 500 — degrade gracefully
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+
+    @app.get("/api/agents")
+    def api_agents():
+        """Desk morning briefing: watchlist + gate + queue + narrative."""
+        try:
+            from brain.agent import morning_briefing
+            return jsonify(morning_briefing(timeframe=request.args.get("tf", TIMEFRAME)))
+        except Exception as exc:  # never 500 — degrade gracefully
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+
+    @app.get("/api/mcp")
+    def api_mcp():
+        """MCP server status + tool inventory for the dashboard card."""
+        try:
+            from ai.mcp_server import TOOLS
+            try:
+                import mcp  # noqa: F401
+                available = True
+                note = "run `python main.py mcp` and point Claude Desktop / Cursor at it"
+            except Exception:
+                available = False
+                note = "mcp package not installed — pip install mcp"
+            return jsonify({"available": available, "note": note,
+                            "count": len(TOOLS),
+                            "tools": [t["name"] for t in TOOLS]})
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"})
+
+    @app.post("/api/ask")
+    def api_ask():
+        """Natural-language question to the desk (intent-based, offline-capable)."""
+        body = request.get_json(silent=True) or {}
+        question = str(body.get("question", "")).strip()
+        if not question:
+            return jsonify({"ok": False, "error": "empty question"}), 400
+        try:
+            from brain.agent import ask
+            return jsonify(ask(question, symbol=_sym(body.get("symbol")),
+                               timeframe=body.get("tf", TIMEFRAME)))
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"{type(exc).__name__}: {exc}"}), 500
 
     return app
 

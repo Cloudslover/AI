@@ -25,7 +25,7 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from config import DB_PATH
+import config as _config
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS scans(
@@ -116,7 +116,10 @@ CREATE INDEX IF NOT EXISTS idx_paper_symbol ON paper_trades(symbol);
 
 class SignalDB:
     def __init__(self, path: str | Path | None = None):
-        self.path = Path(path) if path else Path(DB_PATH)
+        # Read config.DB_PATH at construction time (not import time) so tests
+        # and embedded callers can point the store at a temp file by patching
+        # config.DB_PATH — production behaviour is unchanged.
+        self.path = Path(path) if path else Path(_config.DB_PATH)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # Thread-safe: the dashboard's watchdog thread, Flask request threads
         # and auto-refresh all write to this DB concurrently. WAL mode +
@@ -168,7 +171,13 @@ class SignalDB:
         def _add(table: str, col: str, decl: str) -> None:
             cols = {r["name"] for r in self.conn.execute(f"PRAGMA table_info({table})")}
             if col not in cols:
-                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+                try:
+                    self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {decl}")
+                except sqlite3.OperationalError as exc:
+                    # Another thread/process finished the same migration between
+                    # our PRAGMA check and the ALTER — that is fine.
+                    if "duplicate column" not in str(exc).lower():
+                        raise
 
         _add("scans", "signal_id", "TEXT")
         _add("scans", "status", "TEXT DEFAULT 'PENDING_REVIEW'")
@@ -176,6 +185,11 @@ class SignalDB:
         _add("scans", "approve_note", "TEXT")
         _add("scans", "regime", "TEXT")
         _add("backtest_results", "regime", "TEXT")
+        # sim_key: identity of a simulator-generated sample (symbol:tf:ts:plan:action)
+        # so the 100-backtest / 20-paper grind counts UNIQUE samples even when the
+        # same history window is re-simulated in a later run (decision A6/B10).
+        _add("backtest_results", "sim_key", "TEXT")
+        _add("paper_trades", "sim_key", "TEXT")
         _add("paper_trades", "regime", "TEXT")
         _add("paper_trades", "mae", "REAL")
         _add("paper_trades", "mfe", "REAL")
@@ -263,7 +277,7 @@ class SignalDB:
         cols = (
             "scan_id", "signal_id", "plan_id", "plan_type", "symbol", "timeframe", "action",
             "entry", "stop_loss", "take_profit", "risk_reward", "confidence_pct", "status",
-            "created_ts", "opened_ts", "entry_price", "regime",
+            "created_ts", "opened_ts", "entry_price", "regime", "sim_key",
         )
         values = tuple(fields.get(c) for c in cols)
         cur = self.conn.execute(
@@ -689,18 +703,31 @@ class SignalDB:
                     """INSERT INTO backtest_results
                        (run_id, ts, symbol, timeframe, plan_type, action,
                         confidence_pct, horizon_hours, outcome, rr_achieved,
-                        max_favorable, max_adverse, entry, trigger_level, regime)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        max_favorable, max_adverse, entry, trigger_level, regime,
+                        sim_key)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (run_id, r.get("ts"), r.get("symbol"), r.get("timeframe"),
                      r.get("plan_type"), r.get("action"), r.get("confidence_pct"),
                      r.get("horizon_hours"), r.get("outcome"), r.get("rr_achieved"),
                      r.get("max_favorable"), r.get("max_adverse"), r.get("entry"),
-                     r.get("trigger_level"), r.get("regime")),
+                     r.get("trigger_level"), r.get("regime"), r.get("sim_key")),
                 )
                 n += 1
             self.conn.commit()
             return n
         return self._retry_write(_do_save)
+
+    def sim_keys(self, table: str) -> set[str]:
+        """All simulator sample identities already stored in a table.
+
+        Used by the paper-sample grind to keep counts honest: re-simulating
+        the same history window must not double-count a sample.
+        """
+        if table not in ("backtest_results", "paper_trades"):
+            raise ValueError(f"sim_keys: unsupported table {table!r}")
+        rows = self.conn.execute(
+            f"SELECT sim_key FROM {table} WHERE sim_key IS NOT NULL").fetchall()
+        return {r["sim_key"] for r in rows}
 
     def backtest_stats(self) -> dict:
         """Win-rate learning: by plan type, by confidence bucket, by regime."""

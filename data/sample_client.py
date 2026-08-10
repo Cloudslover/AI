@@ -25,8 +25,19 @@ TF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
          "1w": 604_800_000, "1M": 2_592_000_000}
 
 
+def _seed(key: str) -> int:
+    """Stable per-series seed.
+
+    Plain ``hash()`` is salted per process in CPython, which made the demo
+    series change between runs (and broke simulator dedupe).  crc32 is
+    deterministic everywhere.
+    """
+    import zlib
+    return zlib.crc32(key.encode("utf-8"))
+
+
 def _synthetic(symbol: str, timeframe: str, limit: int) -> pd.DataFrame:
-    rng = np.random.default_rng(abs(hash(f"{symbol}:{timeframe}")) % (2 ** 32))
+    rng = np.random.default_rng(_seed(f"{symbol}:{timeframe}"))
     base = BASE_PRICES.get(symbol, 100.0)
     drift = 0.01 if "ETH" in symbol else 0.005
     n = max(limit, 60)
