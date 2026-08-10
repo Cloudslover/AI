@@ -301,7 +301,9 @@ def morning_briefing(symbols: list[str] | None = None, timeframe: str = TIMEFRAM
                 "desk_action": decision.get("action", sig.get("action")),
                 "blocked_by": decision.get("blocked_by", []),
                 "playbook": (decision.get("gates") or {}).get("playbook", {}).get("name"),
-                "regime": payload.get("snapshot", {}).get("features", {}).get("regime_name"),
+                "regime": (payload.get("intelligence", {}) or {}).get("chart_read", {})
+                          .get("regime", {}).get("label") or
+                          payload.get("snapshot", {}).get("features", {}).get("regime_name"),
                 "lifecycle": payload.get("lifecycle", {}),
             })
             if save:
@@ -350,19 +352,20 @@ def _briefing_narrative(b: dict) -> str:
     lines = []
     for a in b.get("assets", []):
         if not a.get("ok"):
-            lines.append(f"• {a['symbol']}: data feed unavailable — {a.get('error', '')}")
+            lines.append(f"  {a['symbol']}: data feed unavailable — {a.get('error', '')}")
             continue
         pct = a.get("confidence_pct")
         conf = f"{pct}%" if pct else f"{a.get('confidence') or '—'}"
         side = a.get("desk_action", a.get("action"))
+        regime = a.get("regime") or "—"
         if side in ("BUY", "SELL"):
             rr = a.get("risk_reward")
-            lines.append(f"• {a['symbol']} {a['timeframe']}: {side} {a.get('entry'):,.2f} "
+            lines.append(f"  {a['symbol']} {a['timeframe']} [{regime}]: {side} {a.get('entry'):,.2f} "
                          f"(conf {conf}, R:R {rr}) — {a.get('reason', '')}")
             if a.get("blocked_by"):
                 lines.append(f"    desk vetoed: {'; '.join(a['blocked_by'])}")
         else:
-            lines.append(f"• {a['symbol']} {a['timeframe']}: NO TRADE "
+            lines.append(f"  {a['symbol']} {a['timeframe']} [{regime}]: NO TRADE "
                          f"(conf {conf}) — {a.get('reason', '')}")
     gate = b.get("risk_gate") or {}
     prog = gate.get("progression") or {}
@@ -396,13 +399,13 @@ def format_briefing(b: dict) -> str:
         entry_s = f"@{entry:,.2f}" if entry else ""
         pct = a.get("confidence_pct")
         conf = f"{pct}%" if pct else f"{a.get('confidence') or '—'}"
-        lines.append(f"  {mark} {a['symbol']:<10} {side:<8} conf={conf} "
-                     f"{entry_s}  SL {a.get('stop_loss')}  TP {a.get('take_profit')}")
+        lines.append(f"  {mark} {a['symbol']:<10} {side:<8} [{a.get('regime') or '—'}] "
+                     f"conf={conf} {entry_s}  SL {a.get('stop_loss')}  TP {a.get('take_profit')}")
         if a.get("blocked_by"):
             for reason in a["blocked_by"]:
                 lines.append(f"      ✗ {reason}")
         elif a.get("playbook"):
-            lines.append(f"      playbook: {a['playbook']} · regime: {a.get('regime') or '—'}")
+            lines.append(f"      playbook: {a['playbook']}")
     gate = b.get("risk_gate") or {}
     prog = gate.get("progression") or {}
     gate_state = "OPEN — new trades allowed" if gate.get("allowed") \

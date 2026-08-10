@@ -28,10 +28,12 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from config import BACKTEST_HORIZONS, BACKTEST_MIN_BARS, BACKTEST_STEP
+from config import (BACKTEST_HORIZONS, BACKTEST_MIN_BARS, BACKTEST_STEP,
+                    EXECUTION_MODEL)
 from data.symbols import normalize_symbol
 from data.binance_client import TIMEFRAME_TO_MS
 from engine.signal_engine import analyze_frame
+from engine.execution import adjust_for_slip
 
 OUTCOMES = ("FULL_WIN", "PARTIAL_WIN", "LOSS", "OPEN", "NOT_TRIGGERED")
 WIN_SET = {"FULL_WIN", "PARTIAL_WIN"}
@@ -144,6 +146,19 @@ def _evaluate(plan: dict, df: pd.DataFrame, i: int, horizon_bars: int,
     else:
         gp.max_favorable = round(float(entry - lows.min()), 2)
         gp.max_adverse = round(float(highs.max() - entry), 2)
+
+    # ── execution model: slip/impact adjustment (gated by EXECUTION_MODEL) ─
+    # Default "none" keeps the backtest honest (no model = raw fill).
+    # When set to "slip" or "impact", the graded R is reduced by the predicted
+    # market impact of the order size vs. average volume (execution.py).
+    if EXECUTION_MODEL != "none":
+        try:
+            row = df.iloc[i]
+            adjust_for_slip(gp, plan, row, window,
+                            df.attrs.get("symbol", symbol), EXECUTION_MODEL)
+        except Exception:
+            pass  # execution model failure must not break the backtest
+
     return gp
 
 

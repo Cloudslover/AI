@@ -993,6 +993,47 @@ def cmd_mcp(args) -> int:
     return mcp_run()
 
 
+def cmd_hidden(args) -> int:
+    """Hidden alpha CLI: regime + CVD + kelly + MAE/MFE + Monte Carlo.
+
+    Usage:
+      python main.py hidden chart_read [SYMBOL]        # HMM regime + CVD + kelly
+      python main.py hidden analytics mae [SYMBOL]     # MAE/MFE summary from DB
+      python main.py hidden analytics mc [SYMBOL]      # Monte Carlo equity dist
+    """
+    from data.database import SignalDB
+    from engine.hidden_alpha import hidden_alpha_report, format_hidden
+    from brain.analytics import mae_mfe_summary, monte_carlo_equity
+
+    # Subparser positional "symbol" overwrites parent --symbol; fall back to default
+    symbol = _sym(args.symbol or SYMBOL)
+    tf = args.tf
+
+    if args.subcmd in (None, "chart_read"):
+        client = _client()
+        df = client.klines(symbol, tf, args.bars)
+        report = hidden_alpha_report(df, symbol, tf)
+        print(format_hidden(report))
+        return 0
+
+    if args.subcmd == "analytics":
+        with SignalDB() as db:
+            if args.analytics_subcmd == "mae":
+                r = mae_mfe_summary(db, plan_type=args.plan_type)
+            elif args.analytics_subcmd == "mc":
+                r = monte_carlo_equity(
+                    db, samples=args.samples, seed=args.seed)
+            else:
+                print(f"[!] unknown analytics subcommand: {args.analytics_subcmd}",
+                      file=sys.stderr)
+                return 1
+            print(json.dumps(r, indent=2, default=str))
+        return 0
+
+    print(f"[!] unknown hidden subcommand: {args.subcmd}", file=sys.stderr)
+    return 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="CryptoBrain — AI trading-brain signal engine")
     sub = ap.add_subparsers(dest="cmd")
@@ -1213,6 +1254,35 @@ def main() -> int:
 
     p_mcp = sub.add_parser("mcp", help="run the Model Context Protocol server (stdio)")
     p_mcp.set_defaults(func=cmd_mcp)
+
+    # ── hidden alpha CLI (regime + CVD + kelly + MAE/MFE + Monte Carlo) ──
+    p_hidden = sub.add_parser(
+        "hidden", help="hidden alpha layer: regime, CVD, kelly, MAE/MFE, Monte Carlo")
+    p_hidden.set_defaults(func=cmd_hidden)
+    p_hidden.add_argument("--symbol", default=SYMBOL,
+                          help="asset (aliases: BTC, ETH, XAU/GOLD)")
+    p_hidden.add_argument("--tf", default=TIMEFRAME)
+    p_hidden.add_argument("--bars", type=int, default=BARS)
+    h_sub = p_hidden.add_subparsers(dest="subcmd", required=False)
+    # hidden chart_read [SYMBOL]
+    p_cr = h_sub.add_parser("chart_read", help="HMM regime + CVD + kelly (advisory)")
+    p_cr.add_argument("symbol", nargs="?", default=None,
+                      help="asset (defaults to configured symbol)")
+    p_cr.add_argument("--tf", default=TIMEFRAME, help="timeframe")
+    p_cr.add_argument("--bars", type=int, default=BARS, help="number of bars")
+    # hidden analytics mae|mc [SYMBOL]
+    p_an = h_sub.add_parser("analytics", help="MAE/MFE summary or Monte Carlo equity")
+    p_an.add_argument("analytics_subcmd", choices=["mae", "mc"],
+                      help="mae | mc")
+    p_an.add_argument("symbol", nargs="?", default=None,
+                      help="asset (defaults to configured symbol)")
+    p_an.add_argument("--tf", default=TIMEFRAME, help="timeframe (unused for analytics)")
+    p_an.add_argument("--plan-type", default=None,
+                      help="filter MAE/MFE summary by plan type")
+    p_an.add_argument("--samples", type=int, default=2000,
+                      help="Monte Carlo samples (analytics mc only)")
+    p_an.add_argument("--seed", type=int, default=None,
+                      help="Monte Carlo RNG seed")
 
     args = ap.parse_args()
     if args.cmd == "scan" and args.symbols is None:
