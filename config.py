@@ -29,6 +29,7 @@ BINANCE_FUTURES_HOSTS = ["https://fapi.binance.com", "https://fapi.binance.com"]
 MIN_CONFIDENCE = int(os.getenv("MIN_CONFIDENCE", "55"))
 DEFAULT_RISK_REWARD = float(os.getenv("DEFAULT_RISK_REWARD", "2.0"))
 MAX_RISK_PCT = float(os.getenv("MAX_RISK_PCT", "1.0"))
+KELLY_MAX_RISK_PCT = float(os.getenv("KELLY_MAX_RISK_PCT", "0.5"))
 
 # ── Institutional intelligence / risk desk ───────────────────────────────
 # Stricter filters used by the AI Trading Intelligence System.  These do not
@@ -124,6 +125,7 @@ PAPER_MAX_CANDLES_PER_CHECK = int(os.getenv("PAPER_MAX_CANDLES_PER_CHECK", "1000
 BACKTEST_HORIZONS = [float(h) for h in os.getenv("BACKTEST_HORIZONS", "1,4,24").split(",")]
 BACKTEST_MIN_BARS = int(os.getenv("BACKTEST_MIN_BARS", "120"))
 BACKTEST_STEP = int(os.getenv("BACKTEST_STEP", "1"))
+EXECUTION_MODEL = os.getenv("EXECUTION_MODEL", "none")  # none | slip | impact
 
 # ── Calibration (self-improvement) ───────────────────────────────────────
 # Trust thresholds follow the roadmap: >=100 backtest samples and >=20 decided

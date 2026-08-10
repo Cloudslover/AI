@@ -390,7 +390,8 @@ def _scenario(plan: Optional[dict], label: str, fallback: str) -> str:
     return f"{label}: {cond}" + (f" Entry near {entry}." if entry else "")
 
 
-def build_intelligence(payload: dict, df: Optional[pd.DataFrame] = None) -> dict:
+def build_intelligence(payload: dict, df: Optional[pd.DataFrame] = None,
+                       db=None) -> dict:
     """Build the professional JSON report from a full analysis payload."""
     sig = payload.get("signal") or {}
     features = (payload.get("snapshot") or {}).get("features") or {}
@@ -592,6 +593,58 @@ def build_intelligence(payload: dict, df: Optional[pd.DataFrame] = None) -> dict
             "provider_symbol": (payload.get("market_context") or {}).get("data_symbol"),
         },
     }
+
+    # ── chart_read: hidden_alpha layer (regime + CVD + kelly + MAE/MFE) ──
+    chart_read: dict = {}
+    if df is None or len(df) < 20:
+        report["chart_read"] = chart_read
+    else:
+        try:
+            from engine.hidden_alpha import hidden_alpha_report
+
+            hreport = hidden_alpha_report(df, asset, sig.get("timeframe", tf_str))
+            reg = hreport.get("regime") or {}
+            chart_read["regime"] = {
+                "label": reg.get("label", regime.get("label", "unknown")),
+                "probabilities": {k: v for k, v in reg.items()
+                                  if k in ("bull_trend", "bear_trend", "mean_reverting", "volatile_expansion")},
+                "dominant": reg.get("dominant"),
+                "trap_detected": bool(reg.get("trap_detected", False)),
+                "cvd": hreport.get("cvd") or {},
+            }
+        except Exception:
+            pass
+
+        if db is not None:
+            try:
+                from config import KELLY_MAX_RISK_PCT
+                from engine.hidden_alpha import kelly_from_progress
+                from brain import analytics as analytics_mod
+
+                kelly = kelly_from_progress(db.decided_paper_rows(exclude_sim=True))
+                ks = kelly.get("kelly_size")
+                clamped = round(min(ks, KELLY_MAX_RISK_PCT), 4) if ks is not None else None
+                chart_read["kelly"] = {
+                    "kelly_size": ks,
+                    "clamped_size": clamped,
+                    "win_rate": kelly.get("win_rate"),
+                    "expectancy": kelly.get("expectancy"),
+                    "max_risk_pct": KELLY_MAX_RISK_PCT,
+                    "n_trades": kelly.get("n_trades"),
+                    "note": "advisory only — risk_gate enforces the clamped size",
+                }
+                mae = analytics_mod.mae_mfe_summary(db)
+                if mae.get("available"):
+                    chart_read["mae_mfe"] = mae
+                mc = analytics_mod.monte_carlo_equity(db)
+                if mc.get("available"):
+                    chart_read["monte_carlo"] = mc
+            except Exception:
+                pass
+
+        if chart_read:
+            report["chart_read"] = chart_read
+
     if not features.get("price"):
         report.update({
             "signal": "NO TRADE",

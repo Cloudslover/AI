@@ -363,6 +363,7 @@ function render(d){
           <span class="pill ${cls(intel.signal)}">${esc(intel.signal)}</span>
           <b>${esc(intel.asset)} · ${esc(intel.timeframe)}</b>
           <span class="badge" style="background:var(--blue);color:#fff;font-weight:700">Grade ${esc(intel.trade_quality_grade||'N/A')}</span>
+          <span class="badge" style="background:rgba(139,160,189,.12);color:var(--mut)">Regime: ${esc((intel.chart_read||{}).regime?.label||intel.regime?.label||intel.trend||'—')}</span>
         </div>
         <div class="flex">
           <span class="badge" style="background:rgba(59,130,246,.15);color:var(--blue)">IPS ${intel.institutional_probability_score??intel.confidence??0}/100</span>
@@ -378,7 +379,7 @@ function render(d){
           <b>Active Until</b><span class="note">${esc(intel.active_until||'N/A')}</span>
         </div>
         <div class="kv">
-          <b>Market Regime</b><span>${esc(intel.regime?.label||intel.trend)}</span>
+          <b>Market Regime</b><span>${esc((intel.chart_read||{}).regime?.label||intel.regime?.label||intel.trend||'—')}</span>
           <b>Liquidity Trap</b><span>${intel.regime?.trap_detected?'<span class="err">⚠️ Trap / Fakeout Risk</span>':'<span class="okc">✓ Clean / No Trap</span>'}</span>
           <b>Order Flow SMC</b><span>OB: ${esc(intel.order_block)} · FVG: ${esc(intel.fair_value_gap)}</span>
           <b>Kelly Sizing</b><span>${kelly.recommended_risk_pct?kelly.recommended_risk_pct+'% risk ($'+fmt(kelly.recommended_risk_amt)+')':'Fixed 1.0%'} · ${esc(kelly.recommended_leverage||'1x-3x')}</span>
@@ -668,7 +669,9 @@ async function loadPaper(){
     const rows=recent.slice(0,6).map(t=>`<tr>
       <td>#${t.id} <b>${esc(t.symbol||'')}</b> ${esc(t.action||'')}</td>
       <td>${esc(t.plan_type||'Signal')}</td><td>${esc(t.status||'')}</td>
-      <td>${esc(t.outcome||'—')}</td><td>${t.rr_achieved!=null?(+t.rr_achieved).toFixed(2)+'R':'—'}</td>
+      <td>${esc(t.outcome||'—')}</td>
+      <td>${t.rr_achieved!=null?(+t.rr_achieved).toFixed(2)+'R':'—'}</td>
+      <td>${t.mae!=null&&t.mfe!=null?(+t.mae).toFixed(2)+'R / '+(+t.mfe).toFixed(2)+'R':'—'}</td>
       <td class="note">${esc(t.close_reason||'')}</td></tr>`).join('');
     el.innerHTML=`<div class="flex" style="margin-bottom:8px">
       <button class="rowbtn" onclick="runPaper()">▶ Check approved paper trades now</button>
@@ -677,7 +680,7 @@ async function loadPaper(){
       <b>Open</b><span>${o.open||0}</span><b>Closed</b><span>${o.closed||0}</span>
       <b>Win-rate</b><span>${wr}</span><b>Avg R</b><span>${o.avg_rr??0}</span></div>
       <div class="note" style="margin-top:8px">Paper only: public Binance candles, no API key and no real exchange order. Start <code>python main.py paper --watch</code> for unattended monitoring.</div>
-      ${rows?`<table style="margin-top:8px"><tr><th>Trade</th><th>Setup</th><th>Status</th><th>Outcome</th><th>R</th><th>Note</th></tr>${rows}</table>`:'<div class="muted" style="margin-top:8px">Approve a signal, then check it here or start the paper runner.</div>'}`;
+      ${rows?`<table style="margin-top:8px"><tr><th>Trade</th><th>Setup</th><th>Status</th><th>Outcome</th><th>R</th><th>MAE/MFE</th><th>Note</th></tr>${rows}</table>`:'<div class="muted" style="margin-top:8px">Approve a signal, then check it here or start the paper runner.</div>'}`;
   }catch(e){ const el=document.getElementById('paper'); if(el) el.innerHTML='<span class="err">'+esc(e)+'</span>'; }
 }
 
@@ -705,6 +708,18 @@ async function loadRiskGate(){
       <button class="rowbtn" onclick="setTraderState('all',0)">✕ Clear all</button></div>`;
     if(st.note) html+=`<div class="note" style="margin-top:4px">note: ${esc(st.note)}</div>`;
     if(closed) html+=`<div class="err" style="margin-top:6px">No new trades — ${g.blocked_by.map(esc).join('; ')}</div>`;
+    const kelly=det.kelly||{};
+    if(kelly.kelly_size!=null){
+      html+=`<div style="margin-top:8px;background:#0e1524;padding:8px 10px;border-radius:8px;border:1px solid var(--line)">
+        <b style="color:var(--amber)">Kelly Advisory (advisory only — not auto-executed)</b>
+        <div class="kv" style="margin-top:4px">
+          <b>Raw kelly</b><span class="mono">${kelly.kelly_size.toFixed(4)}% risk/trade</span>
+          <b>Clamped max</b><span class="mono" style="color:var(--green)">${kelly.clamped_size!=null?kelly.clamped_size.toFixed(4)+'%':'—'}</span>
+          <b>Win rate</b><span>${kelly.win_rate!=null?(kelly.win_rate*100).toFixed(1)+'%':'—'}</span>
+          <b>Expectancy</b><span>${kelly.expectancy!=null?kelly.expectancy.toFixed(3)+'R':'—'}</span>
+          <b>Samples</b><span>${kelly.n_trades||0} trades</span>
+          <b>Cap</b><span>${kelly.max_risk_pct}%</span></div></div>`;
+    }
     html+=`<div class="note" style="margin-top:6px">Enforced at approval + paper runner. CLI: <code>python main.py risk</code> · <code>python main.py tradestate</code> · <code>python main.py journal</code></div>`;
     el.innerHTML=html;
   }catch(e){ el.innerHTML='<span class="err">'+esc(e)+'</span>'; }

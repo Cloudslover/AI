@@ -67,7 +67,8 @@ def _eth_context(client: BinanceClient) -> dict:
 
 def analyze_full(symbol: str = SYMBOL, timeframe: str = TIMEFRAME,
                  bars: int = BARS, client: Optional[BinanceClient] = None,
-                 with_context: bool = True, with_memory: bool = True) -> dict:
+                 with_context: bool = True, with_memory: bool = True,
+                 db=None) -> dict:
     """Run the complete pipeline. Returns a dict with keys:
     signal, plans, snapshot, styles, mtf, context, memory, market_context,
     validation, analyzed_at."""
@@ -118,7 +119,7 @@ def analyze_full(symbol: str = SYMBOL, timeframe: str = TIMEFRAME,
 
     # 6) professional desk-style intelligence report (strict filters:
     #    confidence >=80, RR >= floor, no major conflict/news risk)
-    payload["intelligence"] = build_intelligence(payload, df=df)
+    payload["intelligence"] = build_intelligence(payload, df=df, db=db)
 
     # 7) FINAL professional decision (decision A4): desk filter + per-asset
     #    playbook (B1/B8) + portfolio/correlation veto (B2) + enforced risk &
