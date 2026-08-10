@@ -115,12 +115,58 @@ python main.py tradestate --clear                   # open it again
 python main.py journal <scan_id> --followed-rules 1 --emotion calm --mistake none
 python main.py journal        # discipline summary (violation rate)
 python main.py sourcetrust discord_group 5 0.3 --note "private signals: context only"
+python main.py health         # system health: data feeds, DB, risk gate, MCP, LLM
+python main.py agent morning  # desk morning briefing across BTC/ETH/GOLD
+python main.py agent ask "is the risk gate open?"   # natural-language question
+python main.py simulator      # grind unique 100-backtest / 20-paper samples per setup
+python main.py mcp            # MCP server for Claude Desktop / Cursor (stdio)
 ```
 
 Progression levels (`PROGRESSION=student|researcher|simulator|micro|consistent|scale`)
 map to your Phase-18 ladder and change risk caps + whether unproven setups
 can be approved. Start at `student`; move to `simulator` when you want to
 paper-trade the 100–200 sample dataset that proves your setups.
+
+#### Desk agent (`agent`, `health`)
+
+* `python main.py agent morning` — one briefing for the whole watchlist: every
+  asset with its final **desk decision** (desk-first), playbook + regime,
+  risk-gate state, pending reviews, open exposure and paper-book stats, plus a
+  plain-English narrative. `--save` also persists each scan.
+* `python main.py agent ask "..."` — intent-based answers from live engine +
+  DB state: risk gate, exposure, pending queue, journal discipline,
+  calibration, stats, paper book, market scan, sources, progression.
+* `python main.py health` — probe every data feed per symbol, DB integrity,
+  risk gate, learning store, MCP + LLM availability; exits non-zero on failure.
+  The dashboard renders the same report (`/api/health`) and the morning
+  briefing (`/api/agents`), and `/api/ask` exposes the question desk.
+
+#### Paper-sample grind (`simulator`)
+
+`python main.py simulator` walks history with the engine, grades every plan
+forward (SL/TP touch logic on real bars), and stores **unique** samples —
+re-simulating the same window never double-counts.  It produces both halves of
+the setup-proven proof (decisions A6/B10):
+
+* backtest samples (`sim_key`-deduped rows in `backtest_results`), and
+* decided paper samples (created-and-closed `paper_trades` rows with
+  TP_HIT/STOP_LOSS outcomes + regime).
+
+The progress table shows each setup against the 100-backtest / 20-paper /
+positive-expectancy targets and tells you when the primary setup family is
+ready for `PROGRESSION=micro`.  Offline it runs on the committed sample +
+deterministic synthetic data (`DEMO_MODE=1`).
+
+#### MCP server (`mcp`)
+
+`python main.py mcp` exposes the desk to Claude Desktop / Cursor / any MCP
+client over stdio (10 tools: health, morning briefing, scan, desk report,
+risk gate, ask, pending, stats, paper, learn).  Add to your MCP client config:
+
+```json
+{ "mcpServers": { "cryptobrain": {
+    "command": "python", "args": ["main.py", "mcp"], "cwd": "/path/to/AI" } } }
+```
 
 ---
 

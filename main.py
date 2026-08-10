@@ -9,6 +9,11 @@ Usage:
   python main.py web                                         # dashboard
   python main.py paper --watch                               # live-market paper monitor
   python main.py sources                                     # CryptoDada + Discord + news
+  python main.py agent morning                               # desk morning briefing
+  python main.py agent ask "is the risk gate open?"          # natural-language question
+  python main.py health                                      # system health
+  python main.py simulator                                   # grind 100/20 sample proof
+  python main.py mcp                                         # MCP server for Claude/Cursor
 """
 from __future__ import annotations
 
@@ -857,6 +862,95 @@ def cmd_journal(args) -> int:
     return 0
 
 
+def cmd_agent(args) -> int:
+    """Desk agent: morning briefing / health / natural-language ask."""
+    from brain.agent import (ask, format_answer, format_briefing, format_health,
+                             health_report, morning_briefing)
+    if args.action == "morning":
+        briefing = morning_briefing(symbols=args.symbols, timeframe=args.tf,
+                                    bars=args.bars, save=args.save)
+        if args.json:
+            print(json.dumps(briefing, indent=2, default=str))
+        else:
+            print(format_briefing(briefing))
+        return 0
+    if args.action == "health":
+        report = health_report()
+        if args.json:
+            print(json.dumps(report, indent=2, default=str))
+        else:
+            print(format_health(report))
+        return 0
+    if args.action == "ask":
+        result = ask(args.question, symbol=args.symbol, timeframe=args.tf,
+                     bars=args.bars)
+        if args.json:
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print(format_answer(result))
+        return 0
+    print(f"[!] unknown agent action: {args.action}", file=sys.stderr)
+    return 1
+
+
+def cmd_health(args) -> int:
+    """System health: data feeds, database, risk gate, learning, MCP, LLM."""
+    from brain.agent import format_health, health_report
+    report = health_report()
+    if args.json:
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        print(format_health(report))
+    return 0 if report.get("ok") else 1
+
+
+def cmd_simulator(args) -> int:
+    """The paper-sample grind: unique backtest + paper samples per setup."""
+    from data.database import SignalDB
+    from data.simulator import (format_progress, grind_verdict,
+                                paper_progress, simulate_round)
+
+    symbols = _symbols(args.symbols) if args.symbols else None
+    total_bt = total_pp = 0
+    rounds = []
+    for r in range(max(1, args.rounds)):
+        res = simulate_round(symbols=symbols, timeframe=args.tf, bars=args.bars,
+                             step=args.step, min_confidence=args.min_conf,
+                             horizons=[float(h) for h in args.horizons.split(",") if h],
+                             save=not args.dry_run)
+        rounds.append(res)
+        total_bt += res["backtest_added"]
+        total_pp += res["paper_added"]
+        if not args.json:
+            for s in res["symbols"]:
+                if s.get("error"):
+                    print(f"[!] {s['symbol']}: {s['error']}", file=sys.stderr)
+            print(f"round {r + 1}: +{res['backtest_added']} backtest samples, "
+                  f"+{res['paper_added']} paper samples (run {res['run_id']})")
+        if args.dry_run:
+            break  # dry-run: one pass, nothing stored
+
+    with SignalDB() as db:
+        progress = paper_progress(db)
+        verdict = grind_verdict(progress)
+    if args.json:
+        print(json.dumps({"rounds": rounds, "totals": {"backtest_added": total_bt,
+                                                       "paper_added": total_pp},
+                          "progress": progress, "verdict": verdict},
+                         indent=2, default=str))
+    else:
+        print()
+        print(format_progress(progress, verdict))
+        print("\n(dry-run: nothing was stored)" if args.dry_run else "")
+    return 0
+
+
+def cmd_mcp(args) -> int:
+    """Run the Model Context Protocol server (stdio) for MCP clients."""
+    from ai.mcp_server import run as mcp_run
+    return mcp_run()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="CryptoBrain — AI trading-brain signal engine")
     sub = ap.add_subparsers(dest="cmd")
@@ -1017,6 +1111,49 @@ def main() -> int:
     p_web.add_argument("--port", type=int, default=None)
     p_web.set_defaults(func=cmd_web)
 
+    p_agent = sub.add_parser("agent", help="desk agent: morning briefing, health, ask")
+    p_agent.set_defaults(func=cmd_agent)
+    a_sub = p_agent.add_subparsers(dest="action", required=True)
+    p_morning = a_sub.add_parser("morning", help="morning briefing across the watchlist")
+    p_morning.add_argument("--symbols", default=None,
+                           help="comma-separated watchlist (default: BTCUSDT,ETHUSDT,XAUUSD)")
+    p_morning.add_argument("--tf", default=TIMEFRAME)
+    p_morning.add_argument("--bars", type=int, default=BARS)
+    p_morning.add_argument("--save", action="store_true",
+                           help="also persist each scan to the signal database")
+    p_morning.add_argument("--json", action="store_true")
+    p_health_a = a_sub.add_parser("health", help="system health report")
+    p_health_a.add_argument("--json", action="store_true")
+    p_ask_a = a_sub.add_parser("ask", help="ask the desk a natural-language question")
+    p_ask_a.add_argument("question")
+    p_ask_a.add_argument("--symbol", default=None, help="asset context (BTC, ETH, GOLD)")
+    p_ask_a.add_argument("--tf", default=TIMEFRAME)
+    p_ask_a.add_argument("--bars", type=int, default=BARS)
+    p_ask_a.add_argument("--json", action="store_true")
+
+    p_health = sub.add_parser("health", help="system health (data feeds, DB, risk gate, MCP)")
+    p_health.add_argument("--json", action="store_true")
+    p_health.set_defaults(func=cmd_health)
+
+    p_sim = sub.add_parser("simulator",
+                           help="grind unique backtest + paper samples per setup (A6/B10)")
+    p_sim.add_argument("--rounds", type=int, default=1, help="rounds to run (default 1)")
+    p_sim.add_argument("--symbols", default=None,
+                       help="comma-separated watchlist (default: BTCUSDT,ETHUSDT,XAUUSD)")
+    p_sim.add_argument("--tf", default=TIMEFRAME)
+    p_sim.add_argument("--bars", type=int, default=600, help="history bars per symbol")
+    p_sim.add_argument("--step", type=int, default=3, help="window step (1 = every bar)")
+    p_sim.add_argument("--min-conf", type=int, default=MIN_CONFIDENCE)
+    p_sim.add_argument("--horizons", default="1,4,24",
+                       help="comma-separated forward horizons in hours")
+    p_sim.add_argument("--dry-run", action="store_true",
+                       help="compute what WOULD be added without storing anything")
+    p_sim.add_argument("--json", action="store_true")
+    p_sim.set_defaults(func=cmd_simulator)
+
+    p_mcp = sub.add_parser("mcp", help="run the Model Context Protocol server (stdio)")
+    p_mcp.set_defaults(func=cmd_mcp)
+
     args = ap.parse_args()
     if args.cmd == "scan" and args.symbols is None:
         args.symbols = args.symbol
@@ -1028,7 +1165,8 @@ def main() -> int:
         print(f"   open  http://localhost:{DASHBOARD_PORT}   (watch + click approve/reject)")
         print("   everything runs from the dashboard — no commands needed")
         print("   advanced/automation: scan | intelligence | watch | paper | analyze | backtest |")
-        print("                        learn | stats | coach | review | sources | state | glossary")
+        print("                        learn | stats | coach | review | sources | state | glossary |")
+        print("                        agent (morning/health/ask) | health | simulator | mcp")
         print("=" * 62)
         serve(make_app(), DASHBOARD_HOST, DASHBOARD_PORT)
         return 0
