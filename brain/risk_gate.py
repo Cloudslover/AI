@@ -72,8 +72,13 @@ def _week_start_utc(now: datetime | None = None) -> int:
 
 
 def closed_pnl(db: SignalDB, since_ts: int, risk_pct: float) -> dict:
-    """Sum of decided paper results since a timestamp, in R and in % equity."""
-    rows = db.decided_paper_rows(since_ts=since_ts)
+    """Sum of decided paper results since a timestamp, in R and in % equity.
+
+    The live risk book excludes simulator walk-forward samples (exclude_sim):
+    they are historical calibration evidence with backdated timestamps, not
+    today's trading, so they must not trip daily/weekly loss limits.
+    """
+    rows = db.decided_paper_rows(since_ts=since_ts, exclude_sim=True)
     r_sum = round(sum(float(r["rr_achieved"] or 0.0) for r in rows), 3)
     return {"n": len(rows), "r_sum": r_sum,
             "pct": round(r_sum * risk_pct, 3)}
@@ -102,8 +107,10 @@ def drawdown(db: SignalDB) -> dict:
 
     Equity starts at the configured account balance (or $10,000) and applies
     each decided trade's ``rr_achieved * risk_pct`` in chronological order.
+    Simulator samples (sim_key NOT NULL) are excluded: they are historical
+    walk-forward rows, not the live book, and must not close the live gate.
     """
-    rows = db.decided_paper_rows()
+    rows = db.decided_paper_rows(exclude_sim=True)
     balance = ACCOUNT_BALANCE or 10_000.0
     risk = effective_risk()
     equity = balance

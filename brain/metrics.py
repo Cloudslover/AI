@@ -15,7 +15,9 @@ from brain.risk_gate import effective_risk
 
 
 def _equity_curve(db: SignalDB, start: float = 10_000.0) -> list[dict]:
-    rows = db.decided_paper_rows()
+    # exclude_sim: simulator walk-forward rows are calibration evidence with
+    # backdated timestamps — the scorecard tracks YOUR paper book only.
+    rows = db.decided_paper_rows(exclude_sim=True)
     risk = effective_risk()
     equity = start
     out = []
@@ -77,8 +79,12 @@ def _metrics(rows: list[dict]) -> dict:
 
 
 def business_metrics(db: SignalDB, windows: tuple[int, ...] = (50, 100)) -> dict:
-    """Full business scorecard: overall + rolling windows + execution."""
-    rows = db.decided_paper_rows()
+    """Full business scorecard: overall + rolling windows + execution.
+
+    Runs on the real paper book only (exclude_sim=True): simulator
+    walk-forward samples feed calibration/setup-proof, not your scorecard.
+    """
+    rows = db.decided_paper_rows(exclude_sim=True)
     overall = _metrics(rows)
     rolling = {}
     for w in windows:

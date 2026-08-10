@@ -484,11 +484,20 @@ class SignalDB:
         return [dict(r) for r in rows]
 
     def decided_paper_rows(self, since_ts: int | None = None,
-                           symbol: str | None = None) -> list[dict]:
-        """Closed, decided paper trades (TP_HIT / STOP_LOSS), oldest first."""
+                           symbol: str | None = None,
+                           exclude_sim: bool = False) -> list[dict]:
+        """Closed, decided paper trades (TP_HIT / STOP_LOSS), oldest first.
+
+        exclude_sim=True drops simulator walk-forward samples (sim_key NOT
+        NULL): they are historical evidence for calibration/setup-proof, but
+        they are NOT the live book — the daily/weekly loss limits, drawdown
+        ladder and business scorecard must only see real paper trades.
+        """
         q = ("SELECT * FROM paper_trades "
              "WHERE outcome IN ('TP_HIT','STOP_LOSS')")
         args: list = []
+        if exclude_sim:
+            q += " AND sim_key IS NULL"
         if since_ts is not None:
             q += " AND closed_ts >= ?"
             args.append(since_ts)

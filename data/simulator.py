@@ -232,7 +232,12 @@ def paper_progress(db) -> list[dict]:
         """SELECT plan_type,
                   SUM(CASE WHEN sim_key IS NULL THEN 1 ELSE 0 END) + COUNT(DISTINCT sim_key) n,
                   SUM(CASE WHEN outcome IN ('FULL_WIN','PARTIAL_WIN') THEN 1 ELSE 0 END) wins,
-                  ROUND(AVG(rr_achieved), 3) expectancy
+                  SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) losses,
+                  ROUND(AVG(rr_achieved), 3) expectancy,
+                  ROUND(SUM(CASE WHEN outcome IN ('FULL_WIN','PARTIAL_WIN')
+                                 THEN COALESCE(rr_achieved,0) ELSE 0 END), 3) win_r,
+                  ROUND(SUM(CASE WHEN outcome='LOSS'
+                                 THEN ABS(COALESCE(rr_achieved,0)) ELSE 0 END), 3) loss_r
            FROM backtest_results
            WHERE outcome IN ('FULL_WIN','PARTIAL_WIN','LOSS')
            GROUP BY plan_type ORDER BY n DESC""").fetchall()
@@ -240,7 +245,12 @@ def paper_progress(db) -> list[dict]:
         """SELECT plan_type,
                   SUM(CASE WHEN sim_key IS NULL THEN 1 ELSE 0 END) + COUNT(DISTINCT sim_key) n,
                   SUM(CASE WHEN outcome='TP_HIT' THEN 1 ELSE 0 END) wins,
-                  ROUND(AVG(rr_achieved), 3) expectancy
+                  SUM(CASE WHEN outcome='STOP_LOSS' THEN 1 ELSE 0 END) losses,
+                  ROUND(AVG(rr_achieved), 3) expectancy,
+                  ROUND(SUM(CASE WHEN outcome='TP_HIT'
+                                 THEN COALESCE(rr_achieved,0) ELSE 0 END), 3) win_r,
+                  ROUND(SUM(CASE WHEN outcome='STOP_LOSS'
+                                 THEN ABS(COALESCE(rr_achieved,0)) ELSE 0 END), 3) loss_r
            FROM paper_trades
            WHERE outcome IN ('TP_HIT','STOP_LOSS')
            GROUP BY plan_type ORDER BY n DESC""").fetchall()
@@ -254,12 +264,24 @@ def paper_progress(db) -> list[dict]:
         b_n, p_n = b.get("n") or 0, p.get("n") or 0
         expectancy = ((b.get("expectancy") or 0.0) * b_n + (p.get("expectancy") or 0.0) * p_n) \
             / (b_n + p_n) if (b_n + p_n) else 0.0
+        wins = (b.get("wins") or 0) + (p.get("wins") or 0)
+        losses = (b.get("losses") or 0) + (p.get("losses") or 0)
+        win_r = (b.get("win_r") or 0.0) + (p.get("win_r") or 0.0)
+        loss_r = (b.get("loss_r") or 0.0) + (p.get("loss_r") or 0.0)
+        decided = wins + losses
         progress.append({
             "plan_type": pt,
             "backtest_n": b_n,
             "paper_n": p_n,
             "backtest_target": CALIBRATE_MIN_N,
             "paper_target": CALIBRATE_MIN_PAPER_N,
+            "n": b_n + p_n,
+            "wins": wins,
+            "losses": losses,
+            "win_rate": round(wins / decided, 3) if decided else None,
+            "pf": round(win_r / loss_r, 3) if loss_r > 0 else None,
+            "win_r": round(win_r, 3),
+            "loss_r": round(loss_r, 3),
             "expectancy": round(expectancy, 3),
             "proven": b_n >= CALIBRATE_MIN_N and p_n >= CALIBRATE_MIN_PAPER_N
                       and expectancy > 0,
@@ -302,6 +324,93 @@ def grind_verdict(progress: list[dict]) -> dict:
     return {"ready": ready, "primary_setup_family": PRIMARY_SETUP_FAMILY,
             "primary_plan_types": primary, "missing": needed,
             "targets": {"backtest": CALIBRATE_MIN_N, "paper": CALIBRATE_MIN_PAPER_N}}
+
+
+# ── graduation gate (BLUEPRINT Step 2 → Step 3) ──────────────────────────
+# The master blueprint promotes the desk to PROGRESSION=micro (real, small
+# capital) only when the primary setup family shows a real statistical edge:
+#   expectancy >= +0.50R per trade
+#   win rate   >  55%
+#   profit factor >= 1.5
+#   rule compliance >= 90%  (from the journal)
+# combined with the 100-backtest / 20-paper sample proof of grind_verdict.
+GRADUATION_CRITERIA: dict[str, float] = {
+    "expectancy": 0.50,   # average R per decided trade (backtest + paper)
+    "win_rate": 0.55,     # fraction of decided trades that won
+    "pf": 1.5,            # gross win R / gross loss R
+    "compliance": 0.90,   # journal: 1 - violation_rate
+}
+
+
+def graduation_status(progress: list[dict], compliance: float | None = None) -> dict:
+    """Blueprint graduation gate: is the desk ready for PROGRESSION=micro?
+
+    Aggregates every decided sample (backtest + paper, deduped) across the
+    primary setup family and checks the four blueprint criteria. `compliance`
+    is 1 - journal violation_rate (None until real journal entries exist —
+    an unproven criterion, never a pass).
+    """
+    primary = primary_plan_types()
+    rows = [p for p in progress if p["plan_type"] in primary]
+    n = sum(p["n"] for p in rows)
+    wins = sum(p["wins"] for p in rows)
+    losses = sum(p["losses"] for p in rows)
+    win_r = sum(p.get("win_r") or 0.0 for p in rows)
+    loss_r = sum(p.get("loss_r") or 0.0 for p in rows)
+    decided = wins + losses
+    expectancy = round((win_r - loss_r) / n, 3) if n else 0.0
+    win_rate = round(wins / decided, 3) if decided else None
+    pf = round(win_r / loss_r, 3) if loss_r > 0 else None
+    stats = {"plan_types": primary, "n": n, "decided": decided,
+             "expectancy": expectancy, "win_rate": win_rate, "pf": pf,
+             "compliance": compliance}
+    met = {
+        "expectancy": expectancy >= GRADUATION_CRITERIA["expectancy"],
+        "win_rate": win_rate is not None and win_rate > GRADUATION_CRITERIA["win_rate"],
+        "pf": (pf is not None and pf >= GRADUATION_CRITERIA["pf"])
+              or (pf is None and loss_r == 0 and win_r > 0),
+        "compliance": compliance is not None
+                      and compliance >= GRADUATION_CRITERIA["compliance"],
+    }
+    samples_ok = grind_verdict(progress)["ready"]
+    return {"ready": bool(samples_ok and all(met.values())),
+            "samples_proven": bool(samples_ok),
+            "criteria": dict(GRADUATION_CRITERIA),
+            "stats": stats, "met": met}
+
+
+def format_graduation(g: dict) -> str:
+    """Human-readable graduation gate block (simulator + `agent ask`)."""
+    s = g["stats"]
+    c = g["criteria"]
+    lines = ["=" * 70, "GRADUATION GATE — ready for PROGRESSION=micro? "
+                       "(BLUEPRINT Step 2 → 3)", "-" * 70]
+    lines.append(f"  primary family : {', '.join(s['plan_types']) or 'none'} "
+                 f"({s['n']} decided samples)")
+    rows = [
+        ("expectancy", f"{s['expectancy']:+.3f}R", "≥ +0.50R", g["met"]["expectancy"]),
+        ("win rate", f"{s['win_rate'] * 100:.1f}%" if s["win_rate"] is not None
+         else "n/a", "> 55%", g["met"]["win_rate"]),
+        ("profit factor", f"{s['pf']:.2f}" if s["pf"] is not None else "n/a",
+         "≥ 1.50", g["met"]["pf"]),
+        ("rule compliance", f"{s['compliance'] * 100:.1f}%" if s["compliance"] is not None
+         else "no journal entries yet", "≥ 90%", g["met"]["compliance"]),
+    ]
+    for name, value, target, ok in rows:
+        mark = "✓" if ok else "✗"
+        lines.append(f"  {mark} {name:<16}{value:<22}{target}")
+    lines.append("-" * 70)
+    proof = ("✓ 100 backtest + 20 paper per primary setup" if g["samples_proven"]
+             else "✗ grind more history first")
+    lines.append(f"  sample proof  : {proof}")
+    if g["ready"]:
+        lines.append("  ✅ GRADUATED — you may set PROGRESSION=micro in .env "
+                     "and trade small live size (0.5% risk/trade, -1.5% daily stop).")
+    else:
+        lines.append("  ⏳ not graduated — keep paper-trading; re-run "
+                     "`python main.py simulator` as new bars arrive, "
+                     "journal every trade.")
+    return "\n".join(lines)
 
 
 def format_progress(progress: list[dict], verdict: dict) -> str:
