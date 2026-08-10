@@ -116,16 +116,20 @@ python main.py journal <scan_id> --followed-rules 1 --emotion calm --mistake non
 python main.py journal        # discipline summary (violation rate)
 python main.py sourcetrust discord_group 5 0.3 --note "private signals: context only"
 python main.py health         # system health: data feeds, DB, risk gate, MCP, LLM
+python main.py brief          # daily desk briefing (alias for `agent morning`)
 python main.py agent morning  # desk morning briefing across BTC/ETH/GOLD
 python main.py agent ask "is the risk gate open?"   # natural-language question
+python main.py agent ask "am i ready for micro?"    # the graduation gate
+python main.py agent all      # one desk run: health + briefing + graduation
 python main.py simulator      # grind unique 100-backtest / 20-paper samples per setup
 python main.py mcp            # MCP server for Claude Desktop / Cursor (stdio)
 ```
 
 Progression levels (`PROGRESSION=student|researcher|simulator|micro|consistent|scale`)
 map to your Phase-18 ladder and change risk caps + whether unproven setups
-can be approved. Start at `student`; move to `simulator` when you want to
-paper-trade the 100–200 sample dataset that proves your setups.
+can be approved. Start at `simulator` (BLUEPRINT Step 1) and paper-trade the
+100–200 sample dataset that proves your setups; promote to `micro` only when
+the **graduation gate** passes (see `BLUEPRINT.md`).
 
 #### Desk agent (`agent`, `health`)
 
@@ -135,9 +139,17 @@ paper-trade the 100–200 sample dataset that proves your setups.
   plain-English narrative. `--save` also persists each scan.
 * `python main.py agent ask "..."` — intent-based answers from live engine +
   DB state: risk gate, exposure, pending queue, journal discipline,
-  calibration, stats, paper book, market scan, sources, progression.
+  calibration, stats, paper book, market scan, sources, progression, and the
+  **graduation gate** (`"am i ready for micro?"`) — the BLUEPRINT Step 2→3
+  checklist: expectancy ≥ +0.50R, win rate > 55%, profit factor ≥ 1.5,
+  rule compliance ≥ 90%, plus the 100/20 sample proof.
+* `python main.py agent all` — one desk run: health report + morning
+  briefing + graduation gate (`--json` for the full machine-readable blob).
+* `python main.py brief` — the daily briefing (alias for `agent morning`).
 * `python main.py health` — probe every data feed per symbol, DB integrity,
   risk gate, learning store, MCP + LLM availability; exits non-zero on failure.
+  In live mode it also cross-checks Binance prices against **KuCoin + OKX**
+  public APIs and flags deviations > 1%.
   The dashboard renders the same report (`/api/health`) and the morning
   briefing (`/api/agents`), and `/api/ask` exposes the question desk.
 
@@ -154,8 +166,16 @@ the setup-proven proof (decisions A6/B10):
 
 The progress table shows each setup against the 100-backtest / 20-paper /
 positive-expectancy targets and tells you when the primary setup family is
-ready for `PROGRESSION=micro`.  Offline it runs on the committed sample +
-deterministic synthetic data (`DEMO_MODE=1`).
+ready for `PROGRESSION=micro`.  Below it, the **graduation gate** prints the
+four BLUEPRINT criteria (expectancy / win rate / profit factor / rule
+compliance) with the exact numbers — `simulator --json` includes them too.
+Offline it runs on the committed sample + deterministic synthetic data
+(`DEMO_MODE=1`).
+
+> Note: simulator walk-forward samples count as **calibration evidence**
+> (setup-proof, graduation gate) but are excluded from the **live risk book**
+> — daily/weekly loss limits, the drawdown ladder and the business scorecard
+> only see real paper trades (`decided_paper_rows(exclude_sim=True)`).
 
 #### MCP server (`mcp`)
 

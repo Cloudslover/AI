@@ -86,3 +86,34 @@ def test_ask_help_fallback(desk_env):
     r = ask("what can you do?")
     assert r["intent"] == "help"
     assert "calibration" in r["data"]["intents"]
+
+
+def test_ask_graduation_intent(desk_env):
+    """'am i ready for micro?' hits the graduation gate (BLUEPRINT Step 2→3)."""
+    from brain.agent import ask
+    r = ask("am i ready for micro?")
+    assert r["intent"] == "graduation"
+    assert "GRADUATION GATE" in "\n".join(r["answer"])
+    g = r["data"]["graduation"]
+    assert set(g["criteria"]) == {"expectancy", "win_rate", "pf", "compliance"}
+    assert set(g["met"]) == {"expectancy", "win_rate", "pf", "compliance"}
+    assert "ready" in g and "samples_proven" in g
+
+
+def test_graduation_report_shape(desk_env):
+    from brain.agent import graduation_report
+    rep = graduation_report()
+    assert set(rep) == {"progress", "graduation", "journal"}
+    assert "ready" in rep["graduation"] and "stats" in rep["graduation"]
+    assert rep["journal"]["violation_rate"] is None  # no journal entries yet
+
+
+def test_health_report_skips_cross_exchange_in_demo(desk_env):
+    """Demo mode has no live Binance prices, so the multi-exchange
+    cross-check must degrade to a note instead of running."""
+    from brain.agent import health_report
+    report = health_report()
+    cross = report["data"]["cross_exchange"]
+    assert cross["ok"] is False
+    assert "demo" in cross["note"]
+    assert "exchanges" not in cross

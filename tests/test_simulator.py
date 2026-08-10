@@ -134,3 +134,108 @@ def test_grind_verdict_lists_missing(sim_env):
     assert v["ready"] is False
     types_missing = {m["plan_type"] for m in v["missing"]}
     assert types_missing == {"Sweep Reversal Sell", "Buy Pullback", "Sell Pullback"}
+
+
+# ── graduation gate (BLUEPRINT Step 2 → Step 3) ───────────────────────────
+
+def _full_row(pt: str, n: int = 120, wins: int = 72, win_r: float = 108.0,
+              loss_r: float = 43.2, backtest_n: int = 120, paper_n: int = 20):
+    """A progress row with the sample proof fields grind_verdict also checks."""
+    return {"plan_type": pt, "backtest_n": backtest_n, "paper_n": paper_n,
+            "n": n, "wins": wins, "losses": n - wins,
+            "win_r": win_r, "loss_r": loss_r,
+            "expectancy": round((win_r - loss_r) / n, 3),
+            "proven": backtest_n >= 100 and paper_n >= 20 and win_r > loss_r}
+
+
+def test_graduation_status_met_on_strong_edge(sim_env):
+    """A strong primary family passes all four blueprint criteria AND the
+    sample proof, so the gate says GRADUATED."""
+    from data.simulator import graduation_status, primary_plan_types
+    primary = primary_plan_types()
+    # +0.54R expectancy, 60% win rate, PF 2.5, 95% compliance
+    progress = [_full_row(pt, n=120, wins=72, win_r=108.0, loss_r=43.2)
+                for pt in primary]
+    g = graduation_status(progress, compliance=0.95)
+    assert g["stats"]["expectancy"] == 0.54
+    assert g["stats"]["win_rate"] == 0.6
+    assert g["stats"]["pf"] == 2.5
+    assert all(g["met"].values())
+    assert g["samples_proven"] is True
+    assert g["ready"] is True
+
+
+def test_graduation_status_fails_weak_edge(sim_env):
+    """A losing family (like demo synthetic data) fails every criterion."""
+    from data.simulator import graduation_status, primary_plan_types
+    primary = primary_plan_types()
+    progress = [_full_row(pt, n=120, wins=40, win_r=60.0, loss_r=120.0)
+                for pt in primary]  # -0.50R, 33% win rate, PF 0.5
+    g = graduation_status(progress, compliance=0.8)
+    assert g["ready"] is False
+    assert g["met"]["expectancy"] is False
+    assert g["met"]["win_rate"] is False
+    assert g["met"]["pf"] is False
+    assert g["met"]["compliance"] is False
+
+
+def test_graduation_compliance_requires_journal(sim_env):
+    """compliance=None (no journal entries yet) never passes the gate."""
+    from data.simulator import graduation_status, primary_plan_types
+    primary = primary_plan_types()
+    progress = [_full_row(pt) for pt in primary]
+    g = graduation_status(progress, compliance=None)
+    assert g["met"]["compliance"] is False
+    assert g["ready"] is False
+
+
+def test_graduation_pf_without_losses(sim_env):
+    """A family with wins and zero losses: PF is undefined but the criterion
+    is treated as met (no losses to drag expectancy down)."""
+    from data.simulator import graduation_status, primary_plan_types
+    primary = primary_plan_types()
+    progress = [_full_row(pt, n=120, wins=120, win_r=240.0, loss_r=0.0)
+                for pt in primary]
+    g = graduation_status(progress, compliance=0.95)
+    assert g["stats"]["pf"] is None
+    assert g["met"]["pf"] is True
+    assert g["ready"] is True
+
+
+def test_graduation_requires_every_primary_setup(sim_env):
+    """Missing one primary setup keeps the gate closed even with great math."""
+    from data.simulator import graduation_status, primary_plan_types
+    primary = primary_plan_types()
+    progress = [_full_row(pt) for pt in primary[:-1]]  # one family member absent
+    g = graduation_status(progress, compliance=0.95)
+    assert g["samples_proven"] is False
+    assert g["ready"] is False
+
+
+def test_paper_progress_rows_carry_win_stats_and_graduation_consistent(sim_env):
+    """After a real grind, progress rows expose win_rate/pf/win_r/loss_r and
+    graduation_status aggregates the exact same numbers."""
+    from data.database import SignalDB
+    from data.simulator import (graduation_status, paper_progress,
+                                primary_plan_types, simulate_round)
+
+    client = FakeClient(n=400, seed=5)
+    simulate_round(symbols=["BTCUSDT"], bars=400, step=8, min_confidence=50,
+                   horizons=[1], client=client)
+    with SignalDB() as db:
+        progress = paper_progress(db)
+        gate = graduation_status(progress)
+
+    for p in progress:
+        assert p["wins"] + p["losses"] == p["n"]
+        assert p["win_rate"] == round(p["wins"] / p["n"], 3)
+        assert "win_r" in p and "loss_r" in p and "pf" in p
+
+    primary = set(primary_plan_types())
+    rows = [p for p in progress if p["plan_type"] in primary]
+    s = gate["stats"]
+    assert s["n"] == sum(p["n"] for p in rows)
+    wins = sum(p["wins"] for p in rows)
+    assert s["win_rate"] == round(wins / s["n"], 3)
+    assert set(s["plan_types"]) == primary
+    assert set(gate["criteria"]) == {"expectancy", "win_rate", "pf", "compliance"}

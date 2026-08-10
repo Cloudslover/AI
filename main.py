@@ -9,9 +9,12 @@ Usage:
   python main.py web                                         # dashboard
   python main.py paper --watch                               # live-market paper monitor
   python main.py sources                                     # CryptoDada + Discord + news
+  python main.py brief                                       # daily desk briefing (alias)
   python main.py agent morning                               # desk morning briefing
   python main.py agent ask "is the risk gate open?"          # natural-language question
-  python main.py health                                      # system health
+  python main.py agent ask "am i ready for micro?"           # graduation gate
+  python main.py agent all                                   # health + briefing + graduation
+  python main.py health                                      # system health (+ KuCoin/OKX cross-check)
   python main.py simulator                                   # grind 100/20 sample proof
   python main.py mcp                                         # MCP server for Claude/Cursor
 """
@@ -863,7 +866,7 @@ def cmd_journal(args) -> int:
 
 
 def cmd_agent(args) -> int:
-    """Desk agent: morning briefing / health / natural-language ask."""
+    """Desk agent: morning briefing / health / natural-language ask / all."""
     from brain.agent import (ask, format_answer, format_briefing, format_health,
                              health_report, morning_briefing)
     if args.action == "morning":
@@ -889,8 +892,38 @@ def cmd_agent(args) -> int:
         else:
             print(format_answer(result))
         return 0
+    if args.action == "all":
+        # One desk run: health + morning briefing + graduation gate.
+        from brain.agent import graduation_report
+        from data.simulator import format_graduation
+        report = health_report()
+        briefing = morning_briefing(symbols=args.symbols, timeframe=args.tf,
+                                    bars=args.bars, save=args.save)
+        gate = graduation_report()
+        if args.json:
+            print(json.dumps({"health": report, "briefing": briefing,
+                              "graduation": gate}, indent=2, default=str))
+        else:
+            print(format_health(report))
+            print()
+            print(format_briefing(briefing))
+            print()
+            print(format_graduation(gate["graduation"]))
+        return 0
     print(f"[!] unknown agent action: {args.action}", file=sys.stderr)
     return 1
+
+
+def cmd_brief(args) -> int:
+    """Daily desk briefing — alias for `agent morning` (BLUEPRINT ready-to-run)."""
+    from brain.agent import format_briefing, morning_briefing
+    briefing = morning_briefing(symbols=args.symbols, timeframe=args.tf,
+                                bars=args.bars, save=args.save)
+    if args.json:
+        print(json.dumps(briefing, indent=2, default=str))
+    else:
+        print(format_briefing(briefing))
+    return 0
 
 
 def cmd_health(args) -> int:
@@ -907,7 +940,8 @@ def cmd_health(args) -> int:
 def cmd_simulator(args) -> int:
     """The paper-sample grind: unique backtest + paper samples per setup."""
     from data.database import SignalDB
-    from data.simulator import (format_progress, grind_verdict,
+    from data.simulator import (format_graduation, format_progress,
+                                graduation_status, grind_verdict,
                                 paper_progress, simulate_round)
 
     symbols = _symbols(args.symbols) if args.symbols else None
@@ -933,14 +967,22 @@ def cmd_simulator(args) -> int:
     with SignalDB() as db:
         progress = paper_progress(db)
         verdict = grind_verdict(progress)
+        from brain.journal import violation_rate
+        j = violation_rate(db)
+        compliance = 1.0 - j["violation_rate"] if j["violation_rate"] is not None \
+            else None
+        gate = graduation_status(progress, compliance=compliance)
     if args.json:
         print(json.dumps({"rounds": rounds, "totals": {"backtest_added": total_bt,
                                                        "paper_added": total_pp},
-                          "progress": progress, "verdict": verdict},
+                          "progress": progress, "verdict": verdict,
+                          "graduation": gate, "journal": j},
                          indent=2, default=str))
     else:
         print()
         print(format_progress(progress, verdict))
+        print()
+        print(format_graduation(gate))
         print("\n(dry-run: nothing was stored)" if args.dry_run else "")
     return 0
 
@@ -1111,7 +1153,7 @@ def main() -> int:
     p_web.add_argument("--port", type=int, default=None)
     p_web.set_defaults(func=cmd_web)
 
-    p_agent = sub.add_parser("agent", help="desk agent: morning briefing, health, ask")
+    p_agent = sub.add_parser("agent", help="desk agent: morning, health, ask, all")
     p_agent.set_defaults(func=cmd_agent)
     a_sub = p_agent.add_subparsers(dest="action", required=True)
     p_morning = a_sub.add_parser("morning", help="morning briefing across the watchlist")
@@ -1130,6 +1172,24 @@ def main() -> int:
     p_ask_a.add_argument("--tf", default=TIMEFRAME)
     p_ask_a.add_argument("--bars", type=int, default=BARS)
     p_ask_a.add_argument("--json", action="store_true")
+    p_all_a = a_sub.add_parser("all", help="one desk run: health + briefing + graduation")
+    p_all_a.add_argument("--symbols", default=None,
+                         help="comma-separated watchlist (default: BTCUSDT,ETHUSDT,XAUUSD)")
+    p_all_a.add_argument("--tf", default=TIMEFRAME)
+    p_all_a.add_argument("--bars", type=int, default=BARS)
+    p_all_a.add_argument("--save", action="store_true",
+                         help="also persist each scan to the signal database")
+    p_all_a.add_argument("--json", action="store_true")
+
+    p_brief = sub.add_parser("brief", help="daily desk briefing (alias for `agent morning`)")
+    p_brief.add_argument("--symbols", default=None,
+                         help="comma-separated watchlist (default: BTCUSDT,ETHUSDT,XAUUSD)")
+    p_brief.add_argument("--tf", default=TIMEFRAME)
+    p_brief.add_argument("--bars", type=int, default=BARS)
+    p_brief.add_argument("--save", action="store_true",
+                         help="also persist each scan to the signal database")
+    p_brief.add_argument("--json", action="store_true")
+    p_brief.set_defaults(func=cmd_brief)
 
     p_health = sub.add_parser("health", help="system health (data feeds, DB, risk gate, MCP)")
     p_health.add_argument("--json", action="store_true")
@@ -1166,7 +1226,8 @@ def main() -> int:
         print("   everything runs from the dashboard — no commands needed")
         print("   advanced/automation: scan | intelligence | watch | paper | analyze | backtest |")
         print("                        learn | stats | coach | review | sources | state | glossary |")
-        print("                        agent (morning/health/ask) | health | simulator | mcp")
+        print("                        brief | agent (morning/health/ask/all) | health |")
+        print("                        simulator | mcp")
         print("=" * 62)
         serve(make_app(), DASHBOARD_HOST, DASHBOARD_PORT)
         return 0

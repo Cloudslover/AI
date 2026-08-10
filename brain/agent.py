@@ -56,6 +56,61 @@ def _probe_data(client) -> dict:
     return out
 
 
+# Public 15m-candle endpoints for the multi-exchange price cross-check
+# (BLUEPRINT: "multi-exchange price verification"). No keys required.
+_CROSS_EXCHANGES: dict[str, dict] = {
+    "kucoin": {
+        "url": "https://api.kucoin.com/api/v1/market/candles?type=15min&symbol={sym}",
+        "symbols": {"BTCUSDT": "BTC-USDT", "ETHUSDT": "ETH-USDT",
+                    "XAUUSD": "PAXG-USDT"},
+        "close_idx": 2,  # [time, open, close, high, low, volume, turnover]
+    },
+    "okx": {
+        "url": "https://www.okx.com/api/v5/market/candles?instId={sym}&bar=15m&limit=1",
+        "symbols": {"BTCUSDT": "BTC-USDT", "ETHUSDT": "ETH-USDT",
+                    "XAUUSD": "PAXG-USDT"},
+        "close_idx": 4,  # [ts, o, h, l, c, vol, ...]
+    },
+}
+
+
+def _cross_exchange_probe(binance_last: dict) -> dict:
+    """Best-effort price cross-check: Binance vs KuCoin + OKX (public APIs).
+
+    Flags deviations > 1%. Every exchange call is wrapped — an unreachable
+    exchange degrades to a note instead of failing the health report.
+    """
+    import requests
+    out = {"ok": True, "note": "multi-exchange cross-check (KuCoin + OKX public)",
+           "threshold_pct": 1.0, "exchanges": {}}
+    for name, cfg in _CROSS_EXCHANGES.items():
+        ex: dict = {"ok": False, "symbols": {}}
+        for our, theirs in cfg["symbols"].items():
+            last = binance_last.get(our)
+            if last is None:
+                continue
+            try:
+                resp = requests.get(cfg["url"].format(sym=theirs), timeout=6)
+                candles = (resp.json() or {}).get("data") or []
+                if not candles:
+                    ex["symbols"][our] = {"error": "no candles in response"}
+                    continue
+                price = float(candles[-1][cfg["close_idx"]])
+                dev = round((price / last - 1.0) * 100.0, 3)
+                ex["symbols"][our] = {"price": round(price, 4),
+                                      "deviation_pct": dev,
+                                      "flag": abs(dev) > 1.0}
+                ex["ok"] = True
+            except Exception as exc:
+                ex["symbols"][our] = {"error": f"{type(exc).__name__}: {exc}"}
+        if not ex["symbols"]:
+            ex["note"] = "no symbols compared (no live Binance prices)"
+        out["exchanges"][name] = ex
+        if not ex["ok"]:
+            out["ok"] = False
+    return out
+
+
 def health_report() -> dict:
     """One JSON-able health snapshot used by `agent health`, /api/health, MCP."""
     report: dict = {
@@ -123,6 +178,16 @@ def health_report() -> dict:
         report["data"]["ok"] = False
         report["data"]["error"] = f"{type(exc).__name__}: {exc}"
 
+    # Multi-exchange verification only makes sense against real Binance prices.
+    if report["data"].get("mode") == "live":
+        report["data"]["cross_exchange"] = _cross_exchange_probe({
+            sym: v.get("last") for sym, v in report["data"]["probe"].items()
+            if v.get("ok")})
+    else:
+        report["data"]["cross_exchange"] = {
+            "ok": False,
+            "note": "skipped — demo data (no live Binance prices to compare)"}
+
     # MCP + LLM availability (informational; neither is required for the engine)
     try:
         import mcp  # noqa: F401
@@ -155,6 +220,22 @@ def format_health(report: dict) -> str:
                          else f"    {sym:<10} ok  {probe['bars']} bars")
         else:
             lines.append(f"    {sym:<10} ✗  {probe.get('error', 'unreachable')}")
+    cross = data.get("cross_exchange") or {}
+    if cross.get("exchanges"):
+        lines.append(f"  cross-exch    : {cross.get('note', '')} "
+                     f"({cross.get('threshold_pct')}% flag threshold)")
+        for name, ex in cross.get("exchanges", {}).items():
+            bits = []
+            for sym, info in ex.get("symbols", {}).items():
+                if "deviation_pct" in info:
+                    flag = " ⚠" if info.get("flag") else ""
+                    bits.append(f"{sym} {info['deviation_pct']:+.2f}%{flag}")
+                else:
+                    bits.append(f"{sym} {info.get('error', 'unreachable')}")
+            lines.append(f"    {name:<10} {'ok  ' if ex.get('ok') else '✗   '}"
+                         + " · ".join(bits) if bits else f"    {name:<10} ✗  no data")
+    elif cross.get("note"):
+        lines.append(f"  cross-exch    : {cross.get('note')}")
     db_ = report.get("database", {})
     if db_.get("ok"):
         lines.append(f"  database     : ok  {db_['path']}")
@@ -347,6 +428,11 @@ def format_briefing(b: dict) -> str:
 # ── ask ───────────────────────────────────────────────────────────────────
 
 _INTENT_KEYWORDS: list[tuple[str, tuple[str, ...]]] = [
+    # graduation must be checked first: "ready for micro" also contains
+    # the generic "progression"/"micro" words.
+    ("graduation", ("graduat", "am i ready", "ready for micro", "micro yet",
+                    "real money", "promote me", "ready to trade real",
+                    "step 3", "blueprint gate")),
     ("risk", ("risk", "gate", "limit", "drawdown", "daily", "weekly", "trader state",
               "stop trading", "allowed")),
     ("exposure", ("exposure", "portfolio", "position", "bucket", "correlation", "open trade")),
@@ -378,6 +464,17 @@ def ask(question: str, symbol: str | None = None,
     intent = _detect_intent(question)
     from data.database import SignalDB
     with SignalDB() as db:
+        if intent == "graduation":
+            from brain.journal import violation_rate
+            from data.simulator import (format_graduation, graduation_status,
+                                        paper_progress)
+            j = violation_rate(db)
+            compliance = 1.0 - j["violation_rate"] if j["violation_rate"] is not None \
+                else None
+            g = graduation_status(paper_progress(db), compliance=compliance)
+            return {"intent": intent, "question": question,
+                    "answer": format_graduation(g).splitlines(),
+                    "data": {"graduation": g, "journal": j}}
         if intent == "risk":
             from brain.risk_gate import evaluate as gate_evaluate
             from brain.risk_gate import status_text
@@ -538,6 +635,24 @@ def ask(question: str, symbol: str | None = None,
                        "Try: 'is the risk gate open?', 'what's pending?', "
                        "'how is my journal discipline?', 'scan BTC'."],
             "data": {"intents": intents}}
+
+
+def graduation_report() -> dict:
+    """Graduation gate + per-setup progress, as one JSON-able dict.
+
+    Used by `agent all`, `simulator --json` and the dashboard.
+    """
+    from data.database import SignalDB
+    from data.simulator import graduation_status, paper_progress
+    with SignalDB() as db:
+        progress = paper_progress(db)
+        from brain.journal import violation_rate
+        j = violation_rate(db)
+        compliance = 1.0 - j["violation_rate"] if j["violation_rate"] is not None \
+            else None
+    return {"progress": progress,
+            "graduation": graduation_status(progress, compliance=compliance),
+            "journal": j}
 
 
 def format_answer(result: dict) -> str:

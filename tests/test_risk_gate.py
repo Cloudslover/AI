@@ -126,3 +126,38 @@ def test_gate_message(tmp_path):
     msg = rg.gate_message(g)
     assert "CLOSED" in msg and "revenge" in msg
     db.close()
+
+
+def test_drawdown_and_daily_exclude_simulator_samples(tmp_path):
+    """Simulator walk-forward rows are historical calibration evidence, not
+    the live book: 200 losing sim samples must not trip the drawdown ladder
+    or today's loss limit — but one REAL losing trade still moves the gate."""
+    db = SignalDB(tmp_path / "sim_gate.db")
+    ts = int(time.time() * 1000)
+
+    def insert(rr: float, sim_key, i: int) -> None:
+        outcome = "TP_HIT" if rr > 0 else "STOP_LOSS"
+        db.conn.execute(
+            """INSERT INTO paper_trades(scan_id, signal_id, plan_type, symbol, timeframe,
+                                        action, entry, stop_loss, take_profit, risk_reward,
+                                        confidence_pct, status, created_ts, opened_ts,
+                                        closed_ts, entry_price, exit_price, outcome,
+                                        rr_achieved, close_reason, sim_key)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (8000 + i, f"S{i}", "Sweep Reversal Buy", "BTCUSDT", "15m", "BUY",
+             100.0, 99.0, 102.0, 2.0, 70, "CLOSED", ts, ts, ts,
+             100.0, 99.0, outcome, rr, "test", sim_key))
+    db.conn.commit()
+
+    for i in range(200):                                    # 200 losing sim samples
+        insert(-1.0, sim_key=f"pp:sim:{i}", i=i)
+    d = rg.drawdown(db)
+    assert d["level"] == "normal"
+    assert d["max_drawdown_pct"] == 0.0
+    assert rg.daily_weekly(db)["today"]["n"] == 0
+
+    insert(-1.0, sim_key=None, i=500)                       # one REAL loss
+    d2 = rg.drawdown(db)
+    assert d2["max_drawdown_pct"] > 0.0
+    assert rg.daily_weekly(db)["today"]["n"] == 1
+    db.close()
