@@ -24,7 +24,8 @@ from typing import Optional
 
 from config import (CALIBRATE_MIN_N, CALIBRATE_MIN_PAPER_N, CALIBRATE_GAIN,
                     CALIBRATE_MAX_MULT, CALIBRATE_MIN_MULT, CALIBRATE_FILTER,
-                    CALIBRATE_FILTER_THRESHOLD, TP_RR_MIN, TP_RR_MAX)
+                    CALIBRATE_FILTER_THRESHOLD, TP_RR_MIN, TP_RR_MAX,
+                    FILL_PROBABILITY_HORIZON_HOURS)
 from data.database import SignalDB
 
 WIN_SET = {"FULL_WIN", "PARTIAL_WIN"}
@@ -129,6 +130,35 @@ def _decided_by_key(db: SignalDB) -> dict:
     return out
 
 
+def compute_fill_probability_by_key(db: SignalDB) -> dict:
+    """Historical trigger/fill probability per setup × regime.
+
+    ``NOT_TRIGGERED`` is execution information, not a trading loss. Keeping it
+    outside expectancy prevents analytical confidence from being conflated
+    with the practical chance that a conditional entry ever becomes active.
+    """
+    rows = db.conn.execute(
+        """SELECT plan_type, COALESCE(NULLIF(regime,''),'') AS regime,
+                  COUNT(*) AS n,
+                  SUM(CASE WHEN outcome!='NOT_TRIGGERED' THEN 1 ELSE 0 END) AS filled
+           FROM backtest_results
+           WHERE outcome IN ('FULL_WIN','PARTIAL_WIN','LOSS','OPEN','NOT_TRIGGERED')
+             AND ABS(horizon_hours - ?) < 0.000001
+           GROUP BY plan_type, regime""",
+        (FILL_PROBABILITY_HORIZON_HOURS,),
+    ).fetchall()
+    return {
+        profile_key(r["plan_type"], r["regime"]): {
+            "fill_samples": int(r["n"] or 0),
+            "fills": int(r["filled"] or 0),
+            "fill_probability": (round(float(r["filled"] or 0) / float(r["n"]), 4)
+                                 if r["n"] else None),
+            "fill_horizon_hours": FILL_PROBABILITY_HORIZON_HOURS,
+        }
+        for r in rows
+    }
+
+
 def build_profile(db: SignalDB, filter_neg: bool = CALIBRATE_FILTER,
                   min_n: int = CALIBRATE_MIN_N,
                   min_paper_n: int = CALIBRATE_MIN_PAPER_N) -> dict:
@@ -141,6 +171,7 @@ def build_profile(db: SignalDB, filter_neg: bool = CALIBRATE_FILTER,
     the lower progression levels.
     """
     stats = _decided_by_key(db)
+    fill_stats = compute_fill_probability_by_key(db)
     profile: dict = {}
     for key, st in stats.items():
         n = st["n"]
@@ -156,6 +187,7 @@ def build_profile(db: SignalDB, filter_neg: bool = CALIBRATE_FILTER,
         tp_rr = None
         if st["avg_win_rr"] is not None:
             tp_rr = round(max(TP_RR_MIN, min(TP_RR_MAX, st["avg_win_rr"])), 2)
+        fill = fill_stats.get(key, {})
         profile[key] = {
             "multiplier": round(mult, 3),
             "expectancy": exp,
@@ -166,8 +198,37 @@ def build_profile(db: SignalDB, filter_neg: bool = CALIBRATE_FILTER,
             "filtered": filtered,
             "proven": proven,
             "tp_rr": tp_rr,
+            "fill_probability": fill.get("fill_probability"),
+            "fill_samples": fill.get("fill_samples", 0),
+            "fill_horizon_hours": fill.get("fill_horizon_hours",
+                                           FILL_PROBABILITY_HORIZON_HOURS),
         }
     return profile
+
+
+def fill_probability_by_type(profile: dict, regime: str = "") -> dict:
+    """Map plan type to measured conditional-entry fill probability.
+
+    Regime-specific evidence wins when requested; otherwise the largest sample
+    for each setup is used. Immediate plans still report 1.0 in ``rules.py``.
+    """
+    selected: dict[str, dict] = {}
+    for key, entry in (profile or {}).items():
+        probability = entry.get("fill_probability")
+        if probability is None:
+            continue
+        plan_type = key.split("::", 1)[0]
+        key_regime = key.split("::", 1)[1] if "::" in key else ""
+        if regime and key_regime != regime:
+            continue
+        current = selected.get(plan_type)
+        if current is None or int(entry.get("fill_samples") or 0) > int(current.get("fill_samples") or 0):
+            selected[plan_type] = entry
+    return {name: {"fill_probability": entry["fill_probability"],
+                   "fill_samples": entry.get("fill_samples", 0),
+                   "fill_horizon_hours": entry.get("fill_horizon_hours",
+                                                   FILL_PROBABILITY_HORIZON_HOURS)}
+            for name, entry in selected.items()}
 
 
 def suggest_tp_rr_by_type(profile: dict, regime: str = "") -> dict:

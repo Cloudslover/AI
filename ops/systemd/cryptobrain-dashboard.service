@@ -1,0 +1,36 @@
+[Unit]
+Description=CryptoBrain private dashboard
+Documentation=file:/opt/cryptobrain/docs/PAPER_TRADING_OPERATIONS.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cryptobrain
+Group=cryptobrain
+WorkingDirectory=/opt/cryptobrain
+EnvironmentFile=/etc/cryptobrain/cryptobrain.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/cryptobrain/.venv/bin/gunicorn --workers 1 --threads 4 --timeout 120 --bind 127.0.0.1:8050 "web.app:make_app()"
+Restart=on-failure
+RestartSec=10s
+TimeoutStopSec=20s
+UMask=0077
+
+# The dashboard can approve/reject and write the journal, so it is deliberately
+# loopback-only. Put authenticated TLS (or an SSH tunnel) in front of it.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/cryptobrain
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

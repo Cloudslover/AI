@@ -27,7 +27,7 @@ from datetime import datetime, timezone
 from config import (PROGRESSION, PROGRESSION_LEVELS, ENFORCE_RISK_LIMITS,
                     TRADER_STATE_BLOCK, DRAWDOWN_REDUCE_PCT, DRAWDOWN_STOP_PCT,
                     DRAWDOWN_REVIEW_PCT, RISK_PCT, MAX_DAILY_LOSS_PCT,
-                    MAX_WEEKLY_LOSS_PCT, ACCOUNT_BALANCE)
+                    MAX_WEEKLY_LOSS_PCT, ACCOUNT_BALANCE, KELLY_MAX_RISK_PCT)
 from data.database import SignalDB
 
 
@@ -202,12 +202,43 @@ def evaluate(db: SignalDB, symbol: str | None = None, plan_type: str | None = No
         "enforced": ENFORCE_RISK_LIMITS,
     })
 
+    # ── kelly advisory (hidden_alpha; advisory-only, never auto-executes) ──
+    try:
+        from engine.hidden_alpha import kelly_from_progress
+
+        kelly = kelly_from_progress(db.decided_paper_rows(exclude_sim=True))
+        ks = kelly.get("kelly_size")
+        clamped = round(min(ks, KELLY_MAX_RISK_PCT), 4) if ks is not None else None
+        details["kelly"] = {
+            "kelly_size": ks,
+            "clamped_size": clamped,
+            "win_rate": kelly.get("win_rate"),
+            "expectancy": kelly.get("expectancy"),
+            "max_risk_pct": KELLY_MAX_RISK_PCT,
+            "n_trades": kelly.get("n_trades"),
+            "note": "advisory only — the risk gate never auto-executes on kelly",
+        }
+    except Exception:
+        details["kelly"] = {"note": "unavailable"}
+
     allowed = not blocked_by
     return {
         "allowed": allowed,
+        # "open"/"progression" are first-class aliases: the desk agents,
+        # immune diagnostics and the root MCP server read the gate through
+        # these keys, while the CLI/dashboard use "allowed"/"details".
+        "open": allowed,
         "blocked_by": blocked_by,
         "details": details,
+        "progression": prog,
     }
+
+
+def evaluate_risk_gate(db: SignalDB, symbol: str | None = None,
+                       plan_type: str | None = None,
+                       action: str | None = None) -> dict:
+    """Convenience alias for evaluate (used by agents / immune / MCP)."""
+    return evaluate(db, symbol=symbol, plan_type=plan_type, action=action)
 
 
 def gate_message(gate: dict) -> str:

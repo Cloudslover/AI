@@ -25,6 +25,8 @@ def test_health_report_ok(desk_env):
     # every watchlist symbol has a data probe
     assert set(report["data"]["probe"]) == {"BTCUSDT", "ETHUSDT", "XAUUSD"}
     assert all(p["ok"] for p in report["data"]["probe"].values())
+    assert all(p.get("last_ts") is not None for p in report["data"]["probe"].values())
+    assert all(p.get("age_seconds") is not None for p in report["data"]["probe"].values())
 
 
 def test_health_report_format(desk_env):
@@ -33,6 +35,22 @@ def test_health_report_format(desk_env):
     assert "VERDICT      : OK" in text
     assert "data mode" in text
     assert "BTCUSDT" in text
+
+
+def test_data_probe_preserves_material_future_skew(monkeypatch):
+    """Only tiny clock skew is clamped; preflight needs larger skew to fail."""
+    import pandas as pd
+    import brain.agent as agent
+
+    class Client:
+        def klines(self, symbol, timeframe, limit):
+            assert (symbol, timeframe, limit) == ("BTCUSDT", "15m", 60)
+            return pd.DataFrame({"ts": [1120] * 10, "close": [100.0] * 10})
+
+    monkeypatch.setattr(agent, "SYMBOLS", ["BTCUSDT"])
+    monkeypatch.setattr(agent.time, "time", lambda: 1000)
+    probe = agent._probe_data(Client())["BTCUSDT"]
+    assert probe["age_seconds"] == -120.0
 
 
 def test_morning_briefing_assets_and_gate(desk_env):
@@ -117,3 +135,40 @@ def test_health_report_skips_cross_exchange_in_demo(desk_env):
     assert cross["ok"] is False
     assert "demo" in cross["note"]
     assert "exchanges" not in cross
+
+
+def test_cross_exchange_probe_uses_newest_candle(monkeypatch):
+    """KuCoin and OKX return newest-first; never compare an old candle."""
+    from brain.agent import _cross_exchange_probe
+
+    class Response:
+        def __init__(self, data):
+            self._data = data
+
+        def json(self):
+            return {"data": self._data}
+
+    def fake_get(url, timeout):
+        assert timeout == 6
+        if "kucoin" in url:
+            # KuCoin close is index 2.  The older row is intentionally far off.
+            return Response([
+                ["200", "99", "100", "101", "98", "1", "100"],
+                ["100", "49", "50", "51", "48", "1", "50"],
+            ])
+        # OKX close is index 4 and is also newest-first.
+        return Response([
+            ["200", "99", "101", "98", "100", "1"],
+            ["100", "49", "51", "48", "50", "1"],
+        ])
+
+    monkeypatch.setattr("requests.get", fake_get)
+    cross = _cross_exchange_probe({"BTCUSDT": 100.0})
+
+    assert cross["ok"] is True
+    assert cross["exchanges"]["kucoin"]["symbols"]["BTCUSDT"] == {
+        "price": 100.0, "deviation_pct": 0.0, "flag": False,
+    }
+    assert cross["exchanges"]["okx"]["symbols"]["BTCUSDT"] == {
+        "price": 100.0, "deviation_pct": 0.0, "flag": False,
+    }

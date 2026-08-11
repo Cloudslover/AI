@@ -15,6 +15,7 @@ Usage:
   python main.py agent ask "am i ready for micro?"           # graduation gate
   python main.py agent all                                   # health + briefing + graduation
   python main.py health                                      # system health (+ KuCoin/OKX cross-check)
+  python main.py preflight                                   # strict live-paper operations gate
   python main.py simulator                                   # grind 100/20 sample proof
   python main.py mcp                                         # MCP server for Claude/Cursor
 """
@@ -84,9 +85,10 @@ def run_scan(symbol: str, timeframe: str, bars: int, with_context: bool = True,
         with SignalDB() as db:
             sig = payload.get("signal", {})
             decision = payload.get("decision") or {}
-            # Desk-first (decision A4): a signal the desk vetoed never enters
-            # the human approval queue — it is recorded as a research scan.
-            desk_ok = decision.get("action") in ("BUY", "SELL")
+            # The three-layer decision service is authoritative. Legacy signal
+            # JSON remains for backwards compatibility only.
+            from brain.decision_service import is_actionable
+            desk_ok = is_actionable(payload)
             status_override = None if desk_ok else "CREATED"
             existing = db.conn.execute(
                 "SELECT id, status FROM scans WHERE signal_id=?",
@@ -416,6 +418,18 @@ def cmd_paper(args) -> int:
             return runner.run_once(symbol=symbol, enroll=not args.no_enroll).as_dict()
 
     if args.watch:
+        # Unattended monitoring fails closed.  Demo data can be used only when
+        # the operator explicitly labels the run as a rehearsal.
+        from brain.preflight import format_preflight, preflight_report
+        preflight = preflight_report(allow_demo=bool(getattr(args, "allow_demo", False)))
+        if args.json:
+            print(json.dumps({"event": "preflight", **preflight}, default=str))
+        else:
+            print(format_preflight(preflight))
+        if not preflight["ready"]:
+            print("[!] paper watcher not started: preflight failed", file=sys.stderr)
+            return 2
+
         print(f"Paper runner watching {symbol or 'all approved symbols'} every "
               f"{args.interval}s — Ctrl+C to stop")
         try:
@@ -484,6 +498,34 @@ def cmd_learn(args) -> int:
     if args.json:
         import json as _json
         print(_json.dumps(result["profile"], indent=2))
+    return 0
+
+
+def cmd_meta_learn(args) -> int:
+    """Offline scoring-weight search; advisory only, never auto-activates."""
+    from brain.meta_learner import evaluate_weight_profiles, save_advisory
+    symbol = _sym(args.symbol)
+    df = _client().klines(symbol, args.tf, args.bars)
+    advisory = evaluate_weight_profiles(
+        df, symbol=symbol, timeframe=args.tf, horizon=args.horizon,
+        min_bars=args.min_bars, step=args.step,
+        min_confidence=args.min_conf, min_decided=args.min_decided,
+    )
+    if args.output:
+        advisory["saved_to"] = str(save_advisory(advisory, args.output))
+    if args.json:
+        print(json.dumps(advisory, indent=2, default=str))
+    else:
+        print("=" * 72)
+        print("SCORING META-LEARNER — OFFLINE ADVISORY (never auto-applied)")
+        print(f"  recommendation: {advisory['recommendation']}")
+        print(f"  reason: {advisory['reason']}")
+        for name, row in advisory["evidence"].items():
+            print(f"  {name:<16} n={row['decided']:<4} exp={row['expectancy']:+.3f}R "
+                  f"PF={row['profit_factor']:.2f} fill={row['fill_rate']:.1%} "
+                  f"objective={row['objective']:+.4f}")
+        print("  operator review required; proposed explicit setting:")
+        print("  " + advisory["operator_action"]["env"])
     return 0
 
 
@@ -865,10 +907,59 @@ def cmd_journal(args) -> int:
     return 0
 
 
+def cmd_ask(args) -> int:
+    """Grounded RAG question over the trading library (with citations).
+
+    Distinct from `agent ask`: this answers knowledge questions ("what are the
+    loss limits?", "which setups have positive expectancy in ranging
+    markets?", "what is the ETH playbook rule?") from the indexed knowledge
+    base with strict source citations, optionally narrated by the LLM.
+    """
+    from brain.ask import ask as rag_ask
+    result = rag_ask(args.question, top_k=args.top_k, use_llm=args.llm)
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        print(result["answer"])
+        if result.get("citations"):
+            print("- citations: " + ", ".join(result["citations"]))
+    return 0
+
+
+def cmd_postreview(args) -> int:
+    """Post-trade review for a closed scan: outcome, R, MAE/MFE, discipline."""
+    from brain.brief import post_trade_review
+    review = post_trade_review(args.scan_id)
+    if args.json:
+        print(json.dumps(review, indent=2, default=str))
+    else:
+        if review.get("error"):
+            print(f"[!] {review['error']}", file=sys.stderr)
+            return 1
+        print(f"POST-TRADE REVIEW — scan #{review['scan_id']} "
+              f"({review.get('symbol')} {review.get('action')})")
+        print(f"  {review['headline']}")
+        for t in review.get("takeaways", []):
+            print(f"  • {t}")
+    return 0
+
+
 def cmd_agent(args) -> int:
-    """Desk agent: morning briefing / health / natural-language ask / all."""
+    """Desk agent: morning briefing / health / natural-language ask / all /
+    autonomous desk agents (watchdog, paper-reviewer, weekly-review)."""
     from brain.agent import (ask, format_answer, format_briefing, format_health,
                              health_report, morning_briefing)
+    if args.action in ("watchdog", "paper-reviewer", "weekly-review",
+                       "paper_reviewer", "weekly_review"):
+        from brain.agents import run_agent
+        result = run_agent(args.action.replace("-", "_"))
+        if getattr(args, "json", False):
+            print(json.dumps(result, indent=2, default=str))
+        else:
+            print(f"[{result['status']}] {result['agent']}: {result['summary']}")
+            if result.get("data"):
+                print(json.dumps(result["data"], indent=2, default=str))
+        return 0
     if args.action == "morning":
         briefing = morning_briefing(symbols=args.symbols, timeframe=args.tf,
                                     bars=args.bars, save=args.save)
@@ -937,6 +1028,158 @@ def cmd_health(args) -> int:
     return 0 if report.get("ok") else 1
 
 
+# ── Agent-Reach-inspired CLI surface (P7/P8, additive) ─────────────────
+# These three commands are the install/doctor/SKILL trio borrowed from
+# Panniantong/Agent-Reach, scoped to CryptoBrain's read-only safety
+# posture.  They never place exchange orders; they only read.
+
+def cmd_doctor(args) -> int:
+    """Non-mutating readiness report.
+
+    Layers the per-channel backend registry (P8) on top of the existing
+    immune system (`brain/immune.run_health_check`). Always exit 0 if
+    at least one channel has a healthy active backend and the risk
+    gate is open; otherwise exit 1.
+    """
+    from brain.channels import doctor_report, probe_all
+    from brain.immune import run_health_check
+
+    if args.json:
+        channels = probe_all()
+        try:
+            immune = run_health_check()
+        except Exception as exc:  # pragma: no cover - defensive
+            immune = {"error": f"immune.run_health_check() failed: {type(exc).__name__}: {exc}"}
+        payload = {
+            "channels": {n: ch.to_dict() for n, ch in channels.items()},
+            "immune": immune,
+        }
+        print(json.dumps(payload, indent=2, default=str))
+        return 0
+
+    print(doctor_report(as_json=False))
+    print()
+    print("─" * 60)
+    print("Immune system:")
+    print("─" * 60)
+    try:
+        from brain.immune import run_health_check
+        immune = run_health_check()
+        if isinstance(immune, dict):
+            for k, v in immune.items():
+                print(f"  {k}: {v}")
+        else:
+            print(immune)
+    except Exception as exc:
+        print(f"  immune system unavailable: {type(exc).__name__}: {exc}")
+    return 0
+
+
+def cmd_channels(args) -> int:
+    """List every channel with active backend, status, and configured/ok count."""
+    from brain.channels import list_channels, probe_all
+
+    if args.json:
+        channels = probe_all()
+        print(json.dumps(
+            {n: ch.to_dict() for n, ch in channels.items()},
+            indent=2, default=str))
+        return 0
+    print(list_channels(as_json=False))
+    return 0
+
+
+def cmd_skill(args) -> int:
+    """Print or install the agent-facing SKILL.md.
+
+    Default behaviour: print the SKILL to stdout (read-only, never
+    writes anywhere). With --install --system, copy the SKILL to
+    ``~/.claude/skills/cryptobrain/SKILL.md`` (the directory layout
+    Claude Code, Cursor, and Arena all recognise). --dry-run previews
+    the path without touching the filesystem.
+    """
+    from pathlib import Path
+
+    skill_path = Path(__file__).parent / "SKILL.md"
+    if not skill_path.exists():
+        print(f"SKILL.md not found at {skill_path}", file=sys.stderr)
+        return 1
+
+    # Default / --print: just dump it to stdout
+    if not args.install and not args.uninstall:
+        sys.stdout.write(skill_path.read_text(encoding="utf-8"))
+        return 0
+
+    # Mutating paths require --system (matches Agent-Reach's stance)
+    if not args.system:
+        print(
+            "Refusing to write under $HOME without --system.\n"
+            "Default is inspect-only. Re-run with --system to permit "
+            "filesystem writes, or add --dry-run to preview.",
+            file=sys.stderr,
+        )
+        return 2
+
+    target_dir = (
+        Path(args.target_dir).expanduser()
+        if args.target_dir
+        else Path.home() / ".claude" / "skills" / "cryptobrain"
+    )
+    target_path = target_dir / "SKILL.md"
+
+    if args.uninstall:
+        if args.dry_run:
+            print(f"[dry-run] would remove {target_path}")
+            return 0
+        try:
+            if target_path.is_symlink():
+                target_path.unlink()
+            elif target_path.exists():
+                target_path.unlink()
+            # Best-effort: remove the now-empty parent dir
+            try:
+                target_dir.rmdir()
+            except OSError:
+                pass
+            print(f"removed {target_path}")
+        except FileNotFoundError:
+            print(f"not installed at {target_path} (no-op)")
+        return 0
+
+    # --install
+    if args.dry_run:
+        print(f"[dry-run] would write {len(skill_path.read_text(encoding='utf-8'))} bytes "
+              f"to {target_path}")
+        return 0
+
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        print(f"could not create {target_dir}: {exc}", file=sys.stderr)
+        return 1
+    try:
+        # Atomic-ish write: write to .tmp then rename
+        tmp = target_path.with_suffix(".md.tmp")
+        tmp.write_text(skill_path.read_text(encoding="utf-8"), encoding="utf-8")
+        tmp.replace(target_path)
+    except OSError as exc:
+        print(f"could not write {target_path}: {exc}", file=sys.stderr)
+        return 1
+    print(f"installed {target_path}")
+    return 0
+
+
+def cmd_preflight(args) -> int:
+    """Strict readiness gate for unattended live-data paper operations."""
+    from brain.preflight import format_preflight, preflight_report
+    report = preflight_report(allow_demo=args.allow_demo)
+    if args.json:
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        print(format_preflight(report))
+    return 0 if report["ready"] else 2
+
+
 def cmd_simulator(args) -> int:
     """The paper-sample grind: unique backtest + paper samples per setup."""
     from data.database import SignalDB
@@ -993,6 +1236,62 @@ def cmd_mcp(args) -> int:
     return mcp_run()
 
 
+def cmd_correlation(args) -> int:
+    """Measured cross-asset correlation matrix + ETH/BTC beta (read-only)."""
+    from engine.correlation import fetch_report, format_correlation
+
+    client = _client()
+    symbols = _symbols(args.symbols) if getattr(args, "symbols", None) else None
+    res = fetch_report(client, symbols=symbols, timeframe=args.tf,
+                       bars=args.bars, window=args.window)
+    if args.json:
+        print(json.dumps(res, indent=2, default=str))
+    else:
+        print(format_correlation(res))
+    return 0 if res.get("available") else 1
+
+
+def cmd_hidden(args) -> int:
+    """Hidden alpha CLI: regime + CVD + kelly + MAE/MFE + Monte Carlo.
+
+    Usage:
+      python main.py hidden chart_read [SYMBOL]        # HMM regime + CVD + kelly
+      python main.py hidden analytics mae [SYMBOL]     # MAE/MFE summary from DB
+      python main.py hidden analytics mc [SYMBOL]      # Monte Carlo equity dist
+    """
+    from data.database import SignalDB
+    from engine.hidden_alpha import hidden_alpha_report, format_hidden
+    from brain.analytics import mae_mfe_summary, monte_carlo_equity
+
+    # Subparser positional "symbol" overwrites parent --symbol; fall back to default
+    symbol = _sym(args.symbol or SYMBOL)
+    tf = args.tf
+
+    if args.subcmd in (None, "chart_read"):
+        client = _client()
+        df = client.klines(symbol, tf, args.bars)
+        report = hidden_alpha_report(df, symbol, tf)
+        print(format_hidden(report))
+        return 0
+
+    if args.subcmd == "analytics":
+        with SignalDB() as db:
+            if args.analytics_subcmd == "mae":
+                r = mae_mfe_summary(db, plan_type=args.plan_type)
+            elif args.analytics_subcmd == "mc":
+                r = monte_carlo_equity(
+                    db, samples=args.samples, seed=args.seed)
+            else:
+                print(f"[!] unknown analytics subcommand: {args.analytics_subcmd}",
+                      file=sys.stderr)
+                return 1
+            print(json.dumps(r, indent=2, default=str))
+        return 0
+
+    print(f"[!] unknown hidden subcommand: {args.subcmd}", file=sys.stderr)
+    return 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="CryptoBrain — AI trading-brain signal engine")
     sub = ap.add_subparsers(dest="cmd")
@@ -1029,6 +1328,10 @@ def main() -> int:
     p_paper.add_argument("--no-enroll", action="store_true",
                          help="only check existing paper trades; do not enroll new approvals")
     p_paper.add_argument("--json", action="store_true", help="machine-readable run summary")
+    p_paper.add_argument(
+        "--allow-demo", action="store_true",
+        help="allow DEMO_MODE=1 for a rehearsal; never counts as live paper evidence",
+    )
     p_paper.set_defaults(func=cmd_paper)
 
     p_src = sub.add_parser("sources", help="pull CryptoDada + Discord + news")
@@ -1080,6 +1383,19 @@ def main() -> int:
     p_learn = sub.add_parser("learn", help="recompute the self-improvement calibration profile")
     p_learn.add_argument("--json", action="store_true")
     p_learn.set_defaults(func=cmd_learn)
+
+    p_meta = sub.add_parser("meta-learn", help="offline advisory search over scoring-weight profiles")
+    p_meta.add_argument("--symbol", default=SYMBOL)
+    p_meta.add_argument("--tf", default=TIMEFRAME)
+    p_meta.add_argument("--bars", type=int, default=BARS)
+    p_meta.add_argument("--horizon", type=float, default=4.0)
+    p_meta.add_argument("--min-bars", type=int, default=120)
+    p_meta.add_argument("--step", type=int, default=5)
+    p_meta.add_argument("--min-conf", type=int, default=MIN_CONFIDENCE)
+    p_meta.add_argument("--min-decided", type=int, default=20)
+    p_meta.add_argument("--output", default=None, help="optional JSON advisory path")
+    p_meta.add_argument("--json", action="store_true")
+    p_meta.set_defaults(func=cmd_meta_learn)
 
     p_coach = sub.add_parser("coach", help="teaching mode: explain + mentor + personal feedback")
     p_coach.add_argument("--symbol", default=SYMBOL, help="asset (aliases: BTC, ETH, XAU/GOLD)")
@@ -1153,7 +1469,20 @@ def main() -> int:
     p_web.add_argument("--port", type=int, default=None)
     p_web.set_defaults(func=cmd_web)
 
-    p_agent = sub.add_parser("agent", help="desk agent: morning, health, ask, all")
+    p_ask = sub.add_parser("ask", help="grounded RAG question over the trading library (with citations)")
+    p_ask.add_argument("question")
+    p_ask.add_argument("--top-k", type=int, default=3)
+    p_ask.add_argument("--llm", action="store_true",
+                       help="narrate the grounded answer with the LLM (if configured)")
+    p_ask.add_argument("--json", action="store_true")
+    p_ask.set_defaults(func=cmd_ask)
+
+    p_pr = sub.add_parser("postreview", help="post-trade review for a closed scan (R, MAE/MFE, discipline)")
+    p_pr.add_argument("scan_id", type=int)
+    p_pr.add_argument("--json", action="store_true")
+    p_pr.set_defaults(func=cmd_postreview)
+
+    p_agent = sub.add_parser("agent", help="desk agent: morning, health, ask, all, watchdog, paper-reviewer, weekly-review")
     p_agent.set_defaults(func=cmd_agent)
     a_sub = p_agent.add_subparsers(dest="action", required=True)
     p_morning = a_sub.add_parser("morning", help="morning briefing across the watchlist")
@@ -1180,6 +1509,13 @@ def main() -> int:
     p_all_a.add_argument("--save", action="store_true",
                          help="also persist each scan to the signal database")
     p_all_a.add_argument("--json", action="store_true")
+    # Autonomous desk agents (brain/agents.py) — audit-logged to agent_runs
+    for name, helptext in (
+            ("watchdog", "paper-trade monitoring + stale-cleanup alarms"),
+            ("paper-reviewer", "post-mortem aggregation over closed paper trades"),
+            ("weekly-review", "metrics, rule-compliance and change detection")):
+        p_auto = a_sub.add_parser(name, help=helptext)
+        p_auto.add_argument("--json", action="store_true")
 
     p_brief = sub.add_parser("brief", help="daily desk briefing (alias for `agent morning`)")
     p_brief.add_argument("--symbols", default=None,
@@ -1194,6 +1530,17 @@ def main() -> int:
     p_health = sub.add_parser("health", help="system health (data feeds, DB, risk gate, MCP)")
     p_health.add_argument("--json", action="store_true")
     p_health.set_defaults(func=cmd_health)
+
+    p_preflight = sub.add_parser(
+        "preflight",
+        help="strict safety/readiness gate before unattended live paper trading",
+    )
+    p_preflight.add_argument("--json", action="store_true")
+    p_preflight.add_argument(
+        "--allow-demo", action="store_true",
+        help="allow sample/synthetic data for a rehearsal (not live evidence)",
+    )
+    p_preflight.set_defaults(func=cmd_preflight)
 
     p_sim = sub.add_parser("simulator",
                            help="grind unique backtest + paper samples per setup (A6/B10)")
@@ -1214,6 +1561,87 @@ def main() -> int:
     p_mcp = sub.add_parser("mcp", help="run the Model Context Protocol server (stdio)")
     p_mcp.set_defaults(func=cmd_mcp)
 
+    p_corr = sub.add_parser(
+        "correlation",
+        help="measured BTC/ETH/GOLD correlation matrix + ETH/BTC beta (read-only)")
+    p_corr.add_argument("--symbols", default=None,
+                        help="comma-separated watchlist (default: BTCUSDT,ETHUSDT,XAUUSD)")
+    p_corr.add_argument("--tf", default="1h")
+    p_corr.add_argument("--bars", type=int, default=300)
+    p_corr.add_argument("--window", type=int, default=60,
+                        help="rolling window of aligned returns")
+    p_corr.add_argument("--json", action="store_true")
+    p_corr.set_defaults(func=cmd_correlation)
+
+    # ── Agent-Reach-inspired surface (P7/P8, additive) ────────────────
+    # `doctor` is a non-mutating readiness report: data feeds, DB, risk
+    # gate, MCP, and the per-channel backend registry.  Default inspect
+    # only; --json is machine-readable; --fix is reserved for future
+    # opt-in prescription execution (currently a no-op).
+    p_doc = sub.add_parser(
+        "doctor",
+        help="non-mutating readiness report (channels + immune system + risk gate)")
+    p_doc.add_argument("--json", action="store_true")
+    p_doc.set_defaults(func=cmd_doctor)
+
+    # `channels` lists the per-source backend registry + active backend.
+    # Read-only; never mutates anything.
+    p_ch = sub.add_parser(
+        "channels",
+        help="per-source backend registry (cryptodada / discord / news / llm) with active backend")
+    p_ch.add_argument("--json", action="store_true")
+    p_ch.set_defaults(func=cmd_channels)
+
+    # `skill` exposes SKILL.md to agents and agent runtimes.
+    # Default is inspect-only: prints the SKILL to stdout.  --install /
+    # --uninstall require --system (matches Agent-Reach's safety posture:
+    # never write under $HOME without explicit operator consent).
+    p_skill = sub.add_parser(
+        "skill",
+        help="print or install the agent-facing SKILL.md (default: print to stdout)")
+    p_skill.add_argument("--print", action="store_true", default=True,
+                         help="print the SKILL.md to stdout (default behaviour)")
+    p_skill.add_argument("--install", action="store_true",
+                         help="install SKILL.md into the local agent skills dir (requires --system)")
+    p_skill.add_argument("--uninstall", action="store_true",
+                         help="remove a previously installed SKILL.md (requires --system)")
+    p_skill.add_argument("--system", action="store_true",
+                         help="permit writing under $HOME; required for --install / --uninstall")
+    p_skill.add_argument("--dry-run", action="store_true",
+                         help="preview install/uninstall without writing")
+    p_skill.add_argument("--target-dir", default=None,
+                         help="override the install directory (default: ~/.claude/skills/cryptobrain)")
+    p_skill.set_defaults(func=cmd_skill)
+
+    # ── hidden alpha CLI (regime + CVD + kelly + MAE/MFE + Monte Carlo) ──
+    p_hidden = sub.add_parser(
+        "hidden", help="hidden alpha layer: regime, CVD, kelly, MAE/MFE, Monte Carlo")
+    p_hidden.set_defaults(func=cmd_hidden)
+    p_hidden.add_argument("--symbol", default=SYMBOL,
+                          help="asset (aliases: BTC, ETH, XAU/GOLD)")
+    p_hidden.add_argument("--tf", default=TIMEFRAME)
+    p_hidden.add_argument("--bars", type=int, default=BARS)
+    h_sub = p_hidden.add_subparsers(dest="subcmd", required=False)
+    # hidden chart_read [SYMBOL]
+    p_cr = h_sub.add_parser("chart_read", help="HMM regime + CVD + kelly (advisory)")
+    p_cr.add_argument("symbol", nargs="?", default=None,
+                      help="asset (defaults to configured symbol)")
+    p_cr.add_argument("--tf", default=TIMEFRAME, help="timeframe")
+    p_cr.add_argument("--bars", type=int, default=BARS, help="number of bars")
+    # hidden analytics mae|mc [SYMBOL]
+    p_an = h_sub.add_parser("analytics", help="MAE/MFE summary or Monte Carlo equity")
+    p_an.add_argument("analytics_subcmd", choices=["mae", "mc"],
+                      help="mae | mc")
+    p_an.add_argument("symbol", nargs="?", default=None,
+                      help="asset (defaults to configured symbol)")
+    p_an.add_argument("--tf", default=TIMEFRAME, help="timeframe (unused for analytics)")
+    p_an.add_argument("--plan-type", default=None,
+                      help="filter MAE/MFE summary by plan type")
+    p_an.add_argument("--samples", type=int, default=2000,
+                      help="Monte Carlo samples (analytics mc only)")
+    p_an.add_argument("--seed", type=int, default=None,
+                      help="Monte Carlo RNG seed")
+
     args = ap.parse_args()
     if args.cmd == "scan" and args.symbols is None:
         args.symbols = args.symbol
@@ -1226,8 +1654,9 @@ def main() -> int:
         print("   everything runs from the dashboard — no commands needed")
         print("   advanced/automation: scan | intelligence | watch | paper | analyze | backtest |")
         print("                        learn | stats | coach | review | sources | state | glossary |")
-        print("                        brief | agent (morning/health/ask/all) | health |")
-        print("                        simulator | mcp")
+        print("                        brief | ask | postreview | agent (morning/health/ask/all/) |")
+        print("                        health | doctor | channels | skill | preflight | simulator |")
+        print("                        hidden | correlation | mcp")
         print("=" * 62)
         serve(make_app(), DASHBOARD_HOST, DASHBOARD_PORT)
         return 0

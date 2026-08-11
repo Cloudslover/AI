@@ -1,12 +1,10 @@
-"""brain/metrics.py — measure yourself like a business (decision B4).
+"""brain/metrics.py — professional trading business metrics (decision B4).
 
-Phase 9 of your roadmap: every 50-100 trades calculate win rate, average
-winner, average loser, expectancy, profit factor, max drawdown, streaks —
-plus execution discipline (violations, revenge trades, overtrading).
+Calculates equity curves, profit factors, win rates, expectancies, drawdowns,
+and rolling performance windows from the decided paper-trade log.
 
-The business metrics run on **decided paper trades** (your actual decisions
-that reached TP or SL).  Backtests are research; paper trades are your track
-record.
+Expectancy formula:
+  E = (win_rate * avg_win_R) - (loss_rate * abs(avg_loss_R))
 """
 from __future__ import annotations
 
@@ -22,12 +20,17 @@ def _equity_curve(db: SignalDB, start: float = 10_000.0) -> list[dict]:
     equity = start
     out = []
     for r in rows:
-        equity += start * (float(r["rr_achieved"] or 0.0) * risk["risk_pct"] / 100.0)
+        rr = r.get("rr_achieved")
+        if rr is None:
+            continue
+        dollar_risk = equity * (risk["risk_pct"] / 100.0)
+        pnl = dollar_risk * rr
+        equity = max(100.0, equity + pnl)
         out.append({
-            "ts": r.get("closed_ts") or r.get("opened_ts"),
-            "symbol": r.get("symbol"),
-            "plan_type": r.get("plan_type"),
-            "rr": float(r.get("rr_achieved") or 0.0),
+            "scan_id": r["scan_id"],
+            "closed_ts": r["closed_ts"],
+            "rr": rr,
+            "pnl": pnl,
             "equity": round(equity, 2),
         })
     return out
@@ -35,46 +38,53 @@ def _equity_curve(db: SignalDB, start: float = 10_000.0) -> list[dict]:
 
 def _metrics(rows: list[dict]) -> dict:
     if not rows:
-        return {"n": 0}
-    wins = [r for r in rows if float(r["rr_achieved"] or 0) > 0]
-    losses = [r for r in rows if float(r["rr_achieved"] or 0) <= 0]
+        return {
+            "n": 0, "wins": 0, "losses": 0, "win_rate": None,
+            "avg_win_r": 0.0, "avg_loss_r": 0.0, "expectancy_r": 0.0,
+            "profit_factor": None, "max_drawdown_pct": 0.0, "final_equity": 10_000.0,
+            "win_streak": 0, "loss_streak": 0, "max_win_streak": 0,
+            "max_loss_streak": 0,
+        }
+    wins = [r for r in rows if (r.get("rr_achieved") or 0) > 0]
+    losses = [r for r in rows if (r.get("rr_achieved") or 0) < 0]
     n = len(rows)
-    gross_win = sum(float(r["rr_achieved"]) for r in wins)
-    gross_loss = abs(sum(float(r["rr_achieved"]) for r in losses))
-    avg_win = gross_win / len(wins) if wins else 0.0
-    avg_loss = gross_loss / len(losses) if losses else 1.0
-    max_streak = cur = 0
-    max_win_streak = max_loss_streak = 0
+    w_cnt, l_cnt = len(wins), len(losses)
+    win_rate = w_cnt / n if n else 0.0
+    loss_rate = l_cnt / n if n else 0.0
+    avg_win = sum(r["rr_achieved"] for r in wins) / w_cnt if w_cnt else 0.0
+    avg_loss = sum(r["rr_achieved"] for r in losses) / l_cnt if l_cnt else 0.0
+    exp = (win_rate * avg_win) + (loss_rate * avg_loss)  # avg_loss is negative
+
+    gross_profit = sum(r["rr_achieved"] for r in wins)
+    gross_loss = abs(sum(r["rr_achieved"] for r in losses))
+    pf = (gross_profit / gross_loss) if gross_loss > 0 else (99.0 if gross_profit > 0 else None)
+
+    # Streaks
+    cur_w, cur_l, max_w, max_l = 0, 0, 0, 0
     for r in rows:
-        if float(r["rr_achieved"] or 0) > 0:
-            cur = cur + 1 if cur > 0 else 1
-            max_win_streak = max(max_win_streak, cur)
-            max_loss_streak = max(max_loss_streak, 0)
-        else:
-            cur = cur - 1 if cur < 0 else -1
-            max_loss_streak = max(max_loss_streak, -cur)
-            max_win_streak = max(max_win_streak, 0)
-    equity = 10_000.0
-    peak = equity
-    max_dd = 0.0
-    risk = effective_risk()
-    for r in rows:
-        equity += 10_000.0 * (float(r["rr_achieved"] or 0.0) * risk["risk_pct"] / 100.0)
-        peak = max(peak, equity)
-        max_dd = max(max_dd, (peak - equity) / peak * 100.0 if peak else 0.0)
+        rr = r.get("rr_achieved") or 0
+        if rr > 0:
+            cur_w += 1
+            cur_l = 0
+            max_w = max(max_w, cur_w)
+        elif rr < 0:
+            cur_l += 1
+            cur_w = 0
+            max_l = max(max_l, cur_l)
+
     return {
         "n": n,
-        "wins": len(wins),
-        "losses": len(losses),
-        "win_rate": round(len(wins) / n, 3),
-        "avg_win_r": round(avg_win, 3),
-        "avg_loss_r": round(avg_loss, 3),
-        "expectancy_r": round(sum(float(r["rr_achieved"] or 0) for r in rows) / n, 3),
-        "profit_factor": round(gross_win / gross_loss, 3) if gross_loss else None,
-        "max_drawdown_pct": round(max_dd, 2),
-        "max_win_streak": max_win_streak,
-        "max_loss_streak": max_loss_streak,
-        "final_equity": round(equity, 2),
+        "wins": w_cnt,
+        "losses": l_cnt,
+        "win_rate": round(win_rate, 3),
+        "avg_win_r": round(avg_win, 2),
+        "avg_loss_r": round(avg_loss, 2),
+        "expectancy_r": round(exp, 3),
+        "profit_factor": round(pf, 2) if pf is not None else None,
+        "win_streak": cur_w,
+        "loss_streak": cur_l,
+        "max_win_streak": max_w,
+        "max_loss_streak": max_l,
     }
 
 
@@ -88,13 +98,22 @@ def business_metrics(db: SignalDB, windows: tuple[int, ...] = (50, 100)) -> dict
     overall = _metrics(rows)
     rolling = {}
     for w in windows:
-        rolling[str(w)] = _metrics(rows[-w:])
+        rolling[str(w)] = _metrics(rows[-w:]) if len(rows) >= w else _metrics(rows)
+        rolling[f"last_{w}"] = rolling[str(w)]
+
+    from brain.risk_gate import drawdown
+    dw = drawdown(db)
+    overall["max_drawdown_pct"] = dw["max_drawdown_pct"]
+    overall["final_equity"] = dw.get("final_equity",
+                                     dw.get("current_equity",
+                                            dw.get("equity", 10_000.0)))
+
     from brain.journal import violation_rate
-    exec_stats = violation_rate(db)
+    v = violation_rate(db)
     return {
         "overall": overall,
         "rolling": rolling,
-        "execution": exec_stats,
+        "execution": v,
         "equity_curve": _equity_curve(db),
     }
 
@@ -124,3 +143,8 @@ def format_metrics(metrics: dict) -> str:
         lines.append(f"  execution       {e['violation_rate']*100:.0f}% rule violations "
                      f"({e['violations']}/{e['n']} journaled trades)")
     return "\n".join(lines)
+
+
+def compute_business_metrics(db: SignalDB, windows: tuple[int, ...] = (50, 100)) -> dict:
+    """Convenience alias for business_metrics."""
+    return business_metrics(db, windows=windows)

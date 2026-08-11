@@ -52,8 +52,9 @@ def test_gold_news_block():
     assert "us_data_countdown" in res["blocking_checks"]
 
 
-def test_gold_session_warn():
-    """Off-window session warns (mode=warn) but does not hard-block."""
+def test_gold_session_warn(monkeypatch):
+    """Off-window session warns when warn mode is explicitly selected."""
+    monkeypatch.setattr("brain.playbooks.GOLD_SESSION_MODE", "warn")
     res = apply_playbook("XAUUSD", "BUY", now=datetime(2026, 8, 9, 3, 0,
                                                        tzinfo=timezone.utc),
                          news_imminent=False, df_1d=_d1_frame())

@@ -6,6 +6,7 @@ requests>=2.31
 # CLI + web dashboard
 flask>=3.0
 python-dotenv>=1.0
+gunicorn>=22.0  # hardened Linux/VPS dashboard service
 
 # MCP server (`python main.py mcp` — Claude Desktop / Cursor integration)
 mcp>=1.0

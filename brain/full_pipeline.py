@@ -15,7 +15,8 @@ from __future__ import annotations
 import time
 from typing import Optional
 
-from config import SYMBOL, TIMEFRAME, BARS, MIN_CONFIDENCE, DEFAULT_RISK_REWARD
+from config import (SYMBOL, TIMEFRAME, BARS, MIN_CONFIDENCE,
+                    DEFAULT_RISK_REWARD, SCORING_WEIGHTS)
 from data.symbols import normalize_symbol
 from data.binance_client import BinanceClient
 from data.sample_client import maybe_client
@@ -23,8 +24,8 @@ from engine.mtf import analyze_mtf, analyze_timeframe
 from engine.signal_engine import analyze_frame
 from output.signal_schema import validate_output
 import brain.context as context_mod
-from .calibrator import apply_calibration as _cal_apply
-from .calibrator import suggest_tp_rr_by_type
+from .calibrator import fill_probability_by_type, suggest_tp_rr_by_type
+from .decision_service import finalize_decision_layers
 from .state_memory import SignalMemory
 from .styles import classify_styles
 from .trading_intelligence import build_intelligence
@@ -33,8 +34,11 @@ from .decision import build_decision
 
 
 def _load_calibration(db=None) -> dict:
+    """Imperative-shell DB read; the engine core receives plain data only."""
     try:
-        from ..data.database import SignalDB
+        if db is not None:
+            return db.load_calibration()
+        from data.database import SignalDB
         with SignalDB() as _db:
             return _db.load_calibration()
     except Exception:
@@ -67,7 +71,8 @@ def _eth_context(client: BinanceClient) -> dict:
 
 def analyze_full(symbol: str = SYMBOL, timeframe: str = TIMEFRAME,
                  bars: int = BARS, client: Optional[BinanceClient] = None,
-                 with_context: bool = True, with_memory: bool = True) -> dict:
+                 with_context: bool = True, with_memory: bool = True,
+                 db=None, now_ms: int | None = None) -> dict:
     """Run the complete pipeline. Returns a dict with keys:
     signal, plans, snapshot, styles, mtf, context, memory, market_context,
     validation, analyzed_at."""
@@ -83,13 +88,18 @@ def analyze_full(symbol: str = SYMBOL, timeframe: str = TIMEFRAME,
     mtf = analyze_mtf(symbol, client, prefetched={timeframe: df})
 
     # 2) single-frame engine (with calibration + professional narrowing)
-    calib = _load_calibration()
-    primary = primary_plan_types(symbol)          # decision A1
-    tp_rr = suggest_tp_rr_by_type(calib)          # decision A2 (data-driven TP)
-    frame = analyze_frame(df, symbol=symbol, timeframe=timeframe,
-                          min_confidence=MIN_CONFIDENCE,
-                          default_rr=DEFAULT_RISK_REWARD, calibration=calib,
-                          primary_types=primary, tp_rr_by_type=tp_rr)
+    calib = _load_calibration(db)
+    primary = primary_plan_types(symbol)          # authorization policy at decision boundary
+    tp_rr = suggest_tp_rr_by_type(calib)          # data-driven TP
+    fill_stats = fill_probability_by_type(calib)  # execution reality, separate from confidence
+    frame = analyze_frame(
+        df, symbol=symbol, timeframe=timeframe,
+        min_confidence=MIN_CONFIDENCE,
+        default_rr=DEFAULT_RISK_REWARD, calibration=calib,
+        primary_types=primary, tp_rr_by_type=tp_rr,
+        fill_stats_by_type=fill_stats, scoring_weights=SCORING_WEIGHTS,
+        htf_context=mtf, now_ms=now_ms,
+    )
     payload = frame.as_json()
     payload["market_context"] = client.market_context(symbol)
 
@@ -99,7 +109,7 @@ def analyze_full(symbol: str = SYMBOL, timeframe: str = TIMEFRAME,
         v1d = mtf.get("views", {}).get("1d", {})
         ctx = context_mod.collect(price_1d=v1d.get("price"),
                                   sma200_1d=None if not v1d.get("available") else
-                                  _sma200(v1d))
+                                  _sma200(v1d), symbol=symbol)
     payload["context"] = ctx
     payload["mtf"] = mtf
 
@@ -118,7 +128,7 @@ def analyze_full(symbol: str = SYMBOL, timeframe: str = TIMEFRAME,
 
     # 6) professional desk-style intelligence report (strict filters:
     #    confidence >=80, RR >= floor, no major conflict/news risk)
-    payload["intelligence"] = build_intelligence(payload, df=df)
+    payload["intelligence"] = build_intelligence(payload, df=df, db=db)
 
     # 7) FINAL professional decision (decision A4): desk filter + per-asset
     #    playbook (B1/B8) + portfolio/correlation veto (B2) + enforced risk &
@@ -132,9 +142,12 @@ def analyze_full(symbol: str = SYMBOL, timeframe: str = TIMEFRAME,
             df_1d = client.klines(symbol, "1d", 30)
         except Exception:
             df_1d = None
-    payload["decision"] = build_decision(payload, symbol, btc_bias=extra.get("btc_bias"),
+    payload["decision"] = build_decision(payload, symbol, db=db,
+                                         btc_bias=extra.get("btc_bias"),
                                          eth_btc_slope=extra.get("eth_btc_slope"),
                                          df_1d=df_1d)
+    payload["decision_service"] = finalize_decision_layers(
+        payload.get("decision_service") or {}, payload["decision"])
 
     payload["validation"] = validate_output(payload)
     payload["analyzed_at"] = int(time.time() * 1000)

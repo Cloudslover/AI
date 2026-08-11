@@ -28,10 +28,12 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-from config import BACKTEST_HORIZONS, BACKTEST_MIN_BARS, BACKTEST_STEP
+from config import (BACKTEST_HORIZONS, BACKTEST_MIN_BARS, BACKTEST_STEP,
+                    EXECUTION_MODEL)
 from data.symbols import normalize_symbol
 from data.binance_client import TIMEFRAME_TO_MS
 from engine.signal_engine import analyze_frame
+from engine.execution import adjust_for_slip
 
 OUTCOMES = ("FULL_WIN", "PARTIAL_WIN", "LOSS", "OPEN", "NOT_TRIGGERED")
 WIN_SET = {"FULL_WIN", "PARTIAL_WIN"}
@@ -98,7 +100,8 @@ def _evaluate(plan: dict, df: pd.DataFrame, i: int, horizon_bars: int,
 
     # Did price ever trade at the entry level? Only conditional (waiting) plans
     # need the trigger — immediate plans execute at the current bar.
-    conditional = plan.get("status") == "waiting" or plan.get("trigger_level") is not None
+    conditional = (plan.get("execution_mode") == "conditional" if "execution_mode" in plan
+                   else plan.get("status") == "waiting" or plan.get("trigger_level") is not None)
     touched_entry = True
     if conditional:
         touched_entry = ((lows <= entry) & (highs >= entry)).any()
@@ -144,6 +147,19 @@ def _evaluate(plan: dict, df: pd.DataFrame, i: int, horizon_bars: int,
     else:
         gp.max_favorable = round(float(entry - lows.min()), 2)
         gp.max_adverse = round(float(highs.max() - entry), 2)
+
+    # ── execution model: slip/impact adjustment (gated by EXECUTION_MODEL) ─
+    # Default "none" keeps the backtest honest (no model = raw fill).
+    # When set to "slip" or "impact", the graded R is reduced by the predicted
+    # market impact of the order size vs. average volume (execution.py).
+    if EXECUTION_MODEL != "none":
+        try:
+            row = df.iloc[i]
+            adjust_for_slip(gp, plan, row, window,
+                            df.attrs.get("symbol", symbol), EXECUTION_MODEL)
+        except Exception:
+            pass  # execution model failure must not break the backtest
+
     return gp
 
 
@@ -181,7 +197,8 @@ def run_backtest(df: pd.DataFrame, symbol: str = "BTCUSDT", timeframe: str = "15
                  horizons: Optional[list[float]] = None,
                  min_bars: int = BACKTEST_MIN_BARS,
                  step: int = BACKTEST_STEP,
-                 min_confidence: int = 55) -> dict:
+                 min_confidence: int = 55,
+                 scoring_weights: dict | None = None) -> dict:
     """Walk the engine over history and grade every plan at every horizon."""
     symbol = normalize_symbol(symbol)
     horizons = horizons or BACKTEST_HORIZONS
@@ -198,7 +215,8 @@ def run_backtest(df: pd.DataFrame, symbol: str = "BTCUSDT", timeframe: str = "15
     for i in range(min_bars, len(df), step):
         slice_df = df.iloc[: i + 1]
         out = analyze_frame(slice_df, symbol=symbol, timeframe=timeframe,
-                            min_confidence=min_confidence)
+                            min_confidence=min_confidence,
+                            scoring_weights=scoring_weights)
         plans = out.plans
         if not plans:
             continue
@@ -219,6 +237,7 @@ def run_backtest(df: pd.DataFrame, symbol: str = "BTCUSDT", timeframe: str = "15
             "min_bars": min_bars, "step": step,
             "runtime_seconds": round(time.time() - start, 2),
             "engine_min_confidence": min_confidence,
+            "scoring_weights": scoring_weights,
         },
         "summary": _aggregate([g for g in all_graded if g.horizon_hours == horizons[0]]),
         "per_horizon": {

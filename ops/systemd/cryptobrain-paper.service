@@ -1,0 +1,39 @@
+[Unit]
+Description=CryptoBrain live-data paper trade monitor (never sends orders)
+Documentation=file:/opt/cryptobrain/docs/PAPER_TRADING_OPERATIONS.md
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=10min
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=cryptobrain
+Group=cryptobrain
+WorkingDirectory=/opt/cryptobrain
+EnvironmentFile=/etc/cryptobrain/cryptobrain.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/cryptobrain/.venv/bin/python -u main.py paper --watch --json
+Restart=on-failure
+RestartSec=60s
+KillSignal=SIGINT
+TimeoutStopSec=20s
+UMask=0077
+
+# The checkout and OS are read-only. Only the dedicated SQLite directory may
+# be modified. Network access remains available for public market data.
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/cryptobrain
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

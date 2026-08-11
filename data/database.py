@@ -67,9 +67,10 @@ CREATE TABLE IF NOT EXISTS decisions(
 CREATE TABLE IF NOT EXISTS calibration(
   plan_type TEXT PRIMARY KEY,
   multiplier REAL, expectancy REAL, samples INTEGER,
-  regime TEXT DEFAULT '', proven INTEGER DEFAULT 0, tp_rr REAL,
+  regime TEXT DEFAULT '', proven INTEGER DEFAULT 0, filtered INTEGER DEFAULT 0, tp_rr REAL,
   backtest_samples INTEGER DEFAULT 0, paper_samples INTEGER DEFAULT 0,
-  win_rate REAL,
+  win_rate REAL, fill_probability REAL, fill_samples INTEGER DEFAULT 0,
+  fill_horizon_hours REAL,
   updated_at INTEGER
 );
 CREATE TABLE IF NOT EXISTS paper_trades(
@@ -102,6 +103,15 @@ CREATE TABLE IF NOT EXISTS trader_state(
 CREATE TABLE IF NOT EXISTS source_scores(
   source TEXT PRIMARY KEY, tier INTEGER, trust REAL,
   last_seen INTEGER, note TEXT
+);
+CREATE TABLE IF NOT EXISTS agent_runs(
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  agent TEXT NOT NULL,
+  status TEXT NOT NULL,
+  summary TEXT,
+  payload_json TEXT,
+  ts INTEGER,
+  created_at TEXT DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_plans_scan ON plans(scan_id);
 CREATE INDEX IF NOT EXISTS idx_bt_type ON backtest_results(plan_type);
@@ -195,10 +205,14 @@ class SignalDB:
         _add("paper_trades", "mfe", "REAL")
         _add("calibration", "regime", "TEXT DEFAULT ''")
         _add("calibration", "proven", "INTEGER DEFAULT 0")
+        _add("calibration", "filtered", "INTEGER DEFAULT 0")
         _add("calibration", "tp_rr", "REAL")
         _add("calibration", "backtest_samples", "INTEGER DEFAULT 0")
         _add("calibration", "paper_samples", "INTEGER DEFAULT 0")
         _add("calibration", "win_rate", "REAL")
+        _add("calibration", "fill_probability", "REAL")
+        _add("calibration", "fill_samples", "INTEGER DEFAULT 0")
+        _add("calibration", "fill_horizon_hours", "REAL")
 
     # ── lifecycle ────────────────────────────────────────────────────────
     def update_status(self, scan_id: int, to_state: str, note: str = "",
@@ -583,21 +597,29 @@ class SignalDB:
             for plan_type, entry in profile.items():
                 self.conn.execute(
                     """INSERT INTO calibration(plan_type, multiplier, expectancy, samples,
-                                               regime, proven, tp_rr, backtest_samples,
-                                               paper_samples, win_rate, updated_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                                               regime, proven, filtered, tp_rr, backtest_samples,
+                                               paper_samples, win_rate, fill_probability,
+                                               fill_samples, fill_horizon_hours, updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                        ON CONFLICT(plan_type) DO UPDATE SET
                          multiplier=excluded.multiplier, expectancy=excluded.expectancy,
                          samples=excluded.samples, regime=excluded.regime,
-                         proven=excluded.proven, tp_rr=excluded.tp_rr,
+                         proven=excluded.proven, filtered=excluded.filtered, tp_rr=excluded.tp_rr,
                          backtest_samples=excluded.backtest_samples,
                          paper_samples=excluded.paper_samples,
-                         win_rate=excluded.win_rate, updated_at=excluded.updated_at""",
+                         win_rate=excluded.win_rate,
+                         fill_probability=excluded.fill_probability,
+                         fill_samples=excluded.fill_samples,
+                         fill_horizon_hours=excluded.fill_horizon_hours,
+                         updated_at=excluded.updated_at""",
                     (plan_type, entry.get("multiplier", 1.0),
                      entry.get("expectancy"), entry.get("samples", 0),
                      entry.get("regime", ""), 1 if entry.get("proven") else 0,
+                     1 if entry.get("filtered") else 0,
                      entry.get("tp_rr"), entry.get("backtest_samples", 0),
-                     entry.get("paper_samples", 0), entry.get("win_rate"), now))
+                     entry.get("paper_samples", 0), entry.get("win_rate"),
+                     entry.get("fill_probability"), entry.get("fill_samples", 0),
+                     entry.get("fill_horizon_hours"), now))
             self.conn.commit()
         return self._retry_write(_do_save)
 
@@ -609,10 +631,14 @@ class SignalDB:
             "samples": r["samples"],
             "regime": r["regime"],
             "proven": bool(r["proven"]),
+            "filtered": bool(r["filtered"]),
             "tp_rr": r["tp_rr"],
             "backtest_samples": r["backtest_samples"],
             "paper_samples": r["paper_samples"],
             "win_rate": r["win_rate"],
+            "fill_probability": r["fill_probability"],
+            "fill_samples": r["fill_samples"],
+            "fill_horizon_hours": r["fill_horizon_hours"],
         } for r in rows}
 
     # ── scans ────────────────────────────────────────────────────────────
@@ -628,6 +654,7 @@ class SignalDB:
             snap = payload.get("snapshot", {})
             features = snap.get("features", {})
             plans = payload.get("plans", [])
+            candidate = (payload.get("decision_service") or {}).get("active_candidate") or {}
             from engine.lifecycle import reviewable
             if status_override:
                 status = status_override
@@ -651,7 +678,8 @@ class SignalDB:
                     sig.get("take_profit"),
                     sig.get("risk_reward"),
                     sig.get("confidence"),
-                    features.get("score_used"),
+                    candidate.get("confidence", sig.get("confidence_pct",
+                                                        features.get("score_used"))),
                     sig.get("reason", ""),
                     sig.get("signal_type", ""),
                     json.dumps(features, default=str),
@@ -804,6 +832,42 @@ class SignalDB:
 
         return {"overall": agg(), "by_type": by_type, "by_confidence": by_conf,
                 "by_regime": by_regime}
+
+    # ── agent runs (autonomous desk agents audit log) ────────────────────
+    def record_agent_run(self, agent: str, status: str, summary: str = "",
+                         payload: dict | None = None) -> int:
+        """Persist one autonomous-agent run (morning brief, watchdog, ...)."""
+        ts = int(time.time())
+        payload_json = json.dumps(payload or {}, default=str)
+
+        def _op():
+            cur = self.conn.execute(
+                "INSERT INTO agent_runs(agent, status, summary, payload_json, ts) "
+                "VALUES(?,?,?,?,?)",
+                (agent, status, summary, payload_json, ts))
+            self.conn.commit()
+            return cur.lastrowid
+        return self._retry_write(_op)
+
+    def latest_agent_runs(self, limit: int = 10, agent: str | None = None) -> list[dict]:
+        """Newest agent runs first, optionally filtered by agent name."""
+        if agent:
+            rows = self.conn.execute(
+                "SELECT * FROM agent_runs WHERE agent=? ORDER BY id DESC LIMIT ?",
+                (agent, limit)).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM agent_runs ORDER BY id DESC LIMIT ?",
+                (limit,)).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            try:
+                d["payload"] = json.loads(d.get("payload_json") or "{}")
+            except Exception:
+                d["payload"] = {}
+            out.append(d)
+        return out
 
     def __enter__(self):
         return self

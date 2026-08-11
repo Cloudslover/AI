@@ -39,6 +39,7 @@ def analyze_timeframe(df: pd.DataFrame, tf: str) -> dict:
     ema20, ema50, ema200 = (float(last.get(f"ema_{p}", price)) for p in (20, 50, 200))
     alignment = "bull" if ema20 > ema50 > ema200 else "bear" if ema20 < ema50 < ema200 else "mixed"
     pd_zone = ms.premium_discount["zone"] if ms.premium_discount else "unknown"
+    structure = ms.as_dict()
     return {
         "tf": tf,
         "available": True,
@@ -58,6 +59,10 @@ def analyze_timeframe(df: pd.DataFrame, tf: str) -> dict:
         "sweep": ms.sweep,
         "equal_highs": ms.equal_levels.get("equal_highs", []),
         "equal_lows": ms.equal_levels.get("equal_lows", []),
+        # Carry actual SMC objects down to the execution-frame planner; bias
+        # alone cannot express "pull back to the 1H bullish OB at X".
+        "order_blocks": structure.get("order_blocks", []),
+        "fvgs": structure.get("fvgs", []),
     }
 
 
@@ -142,6 +147,27 @@ def analyze_mtf(symbol: str, client, tfs: list | None = None,
     resistances = sorted({round(r, 2) for r in resistances}, reverse=True)[:3]
     supports = sorted({round(s, 2) for s in supports})[-3:]
 
+    # Structured HTF objects are a separate channel from directional bias.
+    # The execution engine can now select a precise 1H/4H OB or FVG level and
+    # still demand an LTF CHOCH/rejection before activation.
+    htf_structure: list[dict] = []
+    for tf in ("1w", "1d", "4h", "1h"):
+        view = views.get(tf, {})
+        if not view.get("available"):
+            continue
+        for ob in view.get("order_blocks") or []:
+            if ob.get("broken"):
+                continue
+            level = (float(ob["top"]) + float(ob["bottom"])) / 2.0
+            htf_structure.append({**ob, "kind": "order_block", "timeframe": tf,
+                                  "level": round(level, 8)})
+        for fvg in view.get("fvgs") or []:
+            if fvg.get("filled"):
+                continue
+            level = (float(fvg["top"]) + float(fvg["bottom"])) / 2.0
+            htf_structure.append({**fvg, "kind": "fvg", "timeframe": tf,
+                                  "level": round(level, 8)})
+
     pivot = views.get("1d", {}).get("price")
     return {
         "symbol": symbol,
@@ -150,6 +176,7 @@ def analyze_mtf(symbol: str, client, tfs: list | None = None,
         "ltf_bias": ltf_bias,
         "alignment": {"score": alignment_score, "label": alignment},
         "key_levels": {"support": supports, "resistance": resistances},
+        "htf_structure": htf_structure,
         "pivot": pivot,
         "suggested_bias": "bullish" if htf_bias == "bullish" and ltf_bias != "bearish"
                           else "bearish" if htf_bias == "bearish" and ltf_bias != "bullish"

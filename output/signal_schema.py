@@ -48,8 +48,34 @@ def validate_plan(plan: dict) -> list[str]:
     return errors
 
 
+def validate_decision_service(service: dict) -> list[str]:
+    """Validate the v2.1 canonical watch/candidate/verdict contract."""
+    errors: list[str] = []
+    for field in ("watch_items", "active_candidate", "desk_verdict"):
+        if field not in service:
+            errors.append(f"missing decision_service field: {field}")
+    candidate = service.get("active_candidate")
+    if candidate:
+        if not candidate.get("primary", True):
+            errors.append("active_candidate is not authorized")
+        if candidate.get("status", "active") != "active":
+            errors.append("active_candidate is still waiting")
+        if candidate.get("execution_mode", "immediate") != "immediate":
+            errors.append("active_candidate is conditional")
+        probability = candidate.get("execution_probability")
+        if probability is not None and not 0 <= float(probability) <= 1:
+            errors.append("active_candidate execution_probability outside 0..1")
+    verdict = service.get("desk_verdict") or {}
+    if verdict.get("status") == "TRADE":
+        if not candidate:
+            errors.append("TRADE verdict has no active_candidate")
+        elif verdict.get("action") != candidate.get("action"):
+            errors.append("TRADE verdict direction differs from active_candidate")
+    return errors
+
+
 def validate_output(payload: dict) -> dict:
-    """Validate a full BrainOutput dict; returns {ok, errors, warnings}."""
+    """Validate legacy compatibility plus the canonical v2.1 decision layers."""
     errors, warnings = [], []
     sig = payload.get("signal", {})
     errors += [f"signal: {e}" for e in validate_signal(sig)]
@@ -58,4 +84,9 @@ def validate_output(payload: dict) -> dict:
         warnings.append("signal exists but no plans")
     for i, p in enumerate(plans):
         errors += [f"plan[{i}]: {e}" for e in validate_plan(p)]
+    if "decision_service" in payload:
+        errors += [f"decision_service: {e}" for e in
+                   validate_decision_service(payload["decision_service"])]
+    else:
+        warnings.append("legacy payload: decision_service missing")
     return {"ok": not errors, "errors": errors, "warnings": warnings}

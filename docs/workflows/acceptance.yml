@@ -1,0 +1,33 @@
+name: Daily acceptance snapshots
+
+on:
+  schedule:
+    - cron: "17 2 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "engine/**"
+      - "brain/**"
+      - "data/**"
+      - "tests/test_acceptance_snapshots.py"
+      - "data_samples/acceptance/**"
+
+jobs:
+  full-desk-acceptance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DEMO_MODE: "1"
+      PROGRESSION: "student"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Compare BTC ETH GOLD full-pipeline signatures
+        run: python -m pytest tests/test_acceptance_snapshots.py -q

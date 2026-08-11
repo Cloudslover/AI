@@ -40,15 +40,32 @@ def _data_mode() -> dict:
 
 
 def _probe_data(client) -> dict:
-    """Best-effort per-symbol data feed probe (one klines call each)."""
+    """Best-effort per-symbol data probe with candle-freshness metadata."""
     out: dict[str, dict] = {}
+    now_ms = int(time.time() * 1000)
     for symbol in SYMBOLS:
         try:
             df = client.klines(symbol, "15m", 60)
             ok = df is not None and len(df) >= 10
-            out[symbol] = {"ok": bool(ok), "bars": 0 if df is None else len(df),
-                           "last": None if df is None or not len(df) else
-                           float(df["close"].iloc[-1])}
+            last_ts = None
+            age_seconds = None
+            if df is not None and len(df) and "ts" in df:
+                raw_ts = int(float(df["ts"].iloc[-1]))
+                # Accept seconds as well as the millisecond timestamps used by
+                # Binance. Tolerate only tiny negative ages from clock skew;
+                # preflight must still detect materially future-dated candles.
+                last_ts = raw_ts * 1000 if raw_ts < 1_000_000_000_000 else raw_ts
+                raw_age_seconds = (now_ms - last_ts) / 1000
+                if -60 <= raw_age_seconds < 0:
+                    raw_age_seconds = 0
+                age_seconds = round(raw_age_seconds, 1)
+            out[symbol] = {
+                "ok": bool(ok),
+                "bars": 0 if df is None else len(df),
+                "last": None if df is None or not len(df) else float(df["close"].iloc[-1]),
+                "last_ts": last_ts,
+                "age_seconds": age_seconds,
+            }
             if not ok:
                 out[symbol]["error"] = "too few bars returned"
         except Exception as exc:
@@ -63,13 +80,18 @@ _CROSS_EXCHANGES: dict[str, dict] = {
         "url": "https://api.kucoin.com/api/v1/market/candles?type=15min&symbol={sym}",
         "symbols": {"BTCUSDT": "BTC-USDT", "ETHUSDT": "ETH-USDT",
                     "XAUUSD": "PAXG-USDT"},
-        "close_idx": 2,  # [time, open, close, high, low, volume, turnover]
+        # KuCoin returns candles newest-first:
+        # [time, open, close, high, low, volume, turnover].
+        "latest_idx": 0,
+        "close_idx": 2,
     },
     "okx": {
         "url": "https://www.okx.com/api/v5/market/candles?instId={sym}&bar=15m&limit=1",
         "symbols": {"BTCUSDT": "BTC-USDT", "ETHUSDT": "ETH-USDT",
                     "XAUUSD": "PAXG-USDT"},
-        "close_idx": 4,  # [ts, o, h, l, c, vol, ...]
+        # OKX also returns newest-first: [ts, o, h, l, c, vol, ...].
+        "latest_idx": 0,
+        "close_idx": 4,
     },
 }
 
@@ -95,7 +117,7 @@ def _cross_exchange_probe(binance_last: dict) -> dict:
                 if not candles:
                     ex["symbols"][our] = {"error": "no candles in response"}
                     continue
-                price = float(candles[-1][cfg["close_idx"]])
+                price = float(candles[cfg["latest_idx"]][cfg["close_idx"]])
                 dev = round((price / last - 1.0) * 100.0, 3)
                 ex["symbols"][our] = {"price": round(price, 4),
                                       "deviation_pct": dev,
@@ -215,9 +237,11 @@ def format_health(report: dict) -> str:
     lines.append(f"  data mode    : {data.get('mode')} — {data.get('provider')}")
     for sym, probe in (data.get("probe") or {}).items():
         if probe.get("ok"):
+            age = probe.get("age_seconds")
+            age_note = f", age {float(age) / 60:.1f}m" if age is not None else ""
             lines.append(f"    {sym:<10} ok  {probe['bars']} bars, last "
-                         f"{probe.get('last'):,.2f}" if probe.get("last") is not None
-                         else f"    {sym:<10} ok  {probe['bars']} bars")
+                         f"{probe.get('last'):,.2f}{age_note}" if probe.get("last") is not None
+                         else f"    {sym:<10} ok  {probe['bars']} bars{age_note}")
         else:
             lines.append(f"    {sym:<10} ✗  {probe.get('error', 'unreachable')}")
     cross = data.get("cross_exchange") or {}
@@ -301,7 +325,9 @@ def morning_briefing(symbols: list[str] | None = None, timeframe: str = TIMEFRAM
                 "desk_action": decision.get("action", sig.get("action")),
                 "blocked_by": decision.get("blocked_by", []),
                 "playbook": (decision.get("gates") or {}).get("playbook", {}).get("name"),
-                "regime": payload.get("snapshot", {}).get("features", {}).get("regime_name"),
+                "regime": (payload.get("intelligence", {}) or {}).get("chart_read", {})
+                          .get("regime", {}).get("label") or
+                          payload.get("snapshot", {}).get("features", {}).get("regime_name"),
                 "lifecycle": payload.get("lifecycle", {}),
             })
             if save:
@@ -350,19 +376,20 @@ def _briefing_narrative(b: dict) -> str:
     lines = []
     for a in b.get("assets", []):
         if not a.get("ok"):
-            lines.append(f"• {a['symbol']}: data feed unavailable — {a.get('error', '')}")
+            lines.append(f"  {a['symbol']}: data feed unavailable — {a.get('error', '')}")
             continue
         pct = a.get("confidence_pct")
         conf = f"{pct}%" if pct else f"{a.get('confidence') or '—'}"
         side = a.get("desk_action", a.get("action"))
+        regime = a.get("regime") or "—"
         if side in ("BUY", "SELL"):
             rr = a.get("risk_reward")
-            lines.append(f"• {a['symbol']} {a['timeframe']}: {side} {a.get('entry'):,.2f} "
+            lines.append(f"  {a['symbol']} {a['timeframe']} [{regime}]: {side} {a.get('entry'):,.2f} "
                          f"(conf {conf}, R:R {rr}) — {a.get('reason', '')}")
             if a.get("blocked_by"):
                 lines.append(f"    desk vetoed: {'; '.join(a['blocked_by'])}")
         else:
-            lines.append(f"• {a['symbol']} {a['timeframe']}: NO TRADE "
+            lines.append(f"  {a['symbol']} {a['timeframe']} [{regime}]: NO TRADE "
                          f"(conf {conf}) — {a.get('reason', '')}")
     gate = b.get("risk_gate") or {}
     prog = gate.get("progression") or {}
@@ -396,13 +423,13 @@ def format_briefing(b: dict) -> str:
         entry_s = f"@{entry:,.2f}" if entry else ""
         pct = a.get("confidence_pct")
         conf = f"{pct}%" if pct else f"{a.get('confidence') or '—'}"
-        lines.append(f"  {mark} {a['symbol']:<10} {side:<8} conf={conf} "
-                     f"{entry_s}  SL {a.get('stop_loss')}  TP {a.get('take_profit')}")
+        lines.append(f"  {mark} {a['symbol']:<10} {side:<8} [{a.get('regime') or '—'}] "
+                     f"conf={conf} {entry_s}  SL {a.get('stop_loss')}  TP {a.get('take_profit')}")
         if a.get("blocked_by"):
             for reason in a["blocked_by"]:
                 lines.append(f"      ✗ {reason}")
         elif a.get("playbook"):
-            lines.append(f"      playbook: {a['playbook']} · regime: {a.get('regime') or '—'}")
+            lines.append(f"      playbook: {a['playbook']}")
     gate = b.get("risk_gate") or {}
     prog = gate.get("progression") or {}
     gate_state = "OPEN — new trades allowed" if gate.get("allowed") \
