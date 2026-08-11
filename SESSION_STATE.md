@@ -5,7 +5,7 @@
 **Canonical source imported:** `Azimshawon/SKY@4216448`
 **Implementation:** canonical sync + v2.1 boundary redesign are combined in this PR
 **Current release:** `2.1.0`
-**Current PR:** to be opened from `arena/019ff0d9-ai` to `Cloudslover/AI:main`
+**Current PR:** [Cloudslover/AI#5](https://github.com/Cloudslover/AI/pull/5) from `arena/019ff0d9-ai` to `main`
 
 ## Start here
 
