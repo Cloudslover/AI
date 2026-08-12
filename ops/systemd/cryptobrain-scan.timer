@@ -1,0 +1,11 @@
+[Unit]
+Description=Scan BTC, ETH and XAUUSD every 15 minutes
+
+[Timer]
+OnCalendar=*-*-* *:00/15:00
+RandomizedDelaySec=30s
+Persistent=true
+Unit=cryptobrain-scan.service
+
+[Install]
+WantedBy=timers.target

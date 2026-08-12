@@ -1,0 +1,30 @@
+[Unit]
+Description=CryptoBrain watchlist scan (human approval remains mandatory)
+Documentation=file:/opt/cryptobrain/docs/PAPER_TRADING_OPERATIONS.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=cryptobrain
+Group=cryptobrain
+WorkingDirectory=/opt/cryptobrain
+EnvironmentFile=/etc/cryptobrain/cryptobrain.env
+Environment=PYTHONUNBUFFERED=1
+ExecStartPre=/opt/cryptobrain/.venv/bin/python -u main.py preflight --json
+ExecStart=/opt/cryptobrain/.venv/bin/python -u main.py scan --symbols BTCUSDT,ETHUSDT,XAUUSD --tf 15m --json
+TimeoutStartSec=10min
+UMask=0077
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/cryptobrain
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

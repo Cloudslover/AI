@@ -38,9 +38,9 @@ with connectors for your **private CryptoDada website** and **Discord group**.
 | **Signal database** | SQLite learning store — every scan + every graded outcome, queried via `python main.py stats` |
 | **Human approval gate** | Every actionable signal enters `PENDING_REVIEW`; you approve/reject/execute/close it with one command (or the dashboard buttons). Full audit trail per signal. |
 | **Paper-trading runner** | Watches **approved** signals against live public Binance candles, simulates a planned entry, and auto-closes at SL / TP1. It records the outcome and R result — **never places a real exchange order**. |
-| **Self-improvement** | `python main.py learn` recomputes a per-setup calibration profile from backtest outcomes **plus decided paper trades** — boosts positive-expectancy plans, dampens (or filters) negative ones. |
+| **Self-improvement** | `python main.py learn` recomputes a per-setup calibration profile from backtest outcomes **plus decided paper trades** — boosts positive-expectancy plans, dampens (or filters) negative ones, and reports conditional-entry fill probability separately. `python main.py meta-learn` advises on scoring-weight profiles but never activates one without human review. |
 | **Coach (teaching)** | `python main.py coach` explains *why* the engine said what it said, mentors you through the top setup step-by-step, gives personal feedback on your own approvals/rejections, and ships a full trading glossary. |
-| **CI** | GitHub Actions runs the offline test suite on every push |
+| **CI** | GitHub Actions runs the offline suite on PRs/main. A scheduled BTC/ETH/GOLD acceptance workflow is provided at `docs/workflows/acceptance.yml` for a repository owner to activate (Arena's GitHub App lacks workflow-write scope). |
 | **Web dashboard** | **`python main.py`** opens the all-in-one dashboard: live signal + lifecycle badge, **candlestick chart**, **multi-timeframe table**, **what-the-market-offers styles grid**, **context panel** (news/macro/geopolitics/cycle/social/equities), **state memory panel** (signal stability), plans, human approval queue, a one-click **paper-trading runner** panel, recent signals, learning dashboard, coach, LLM narrative — auto-refreshing. |
 | **Human-like thinking** | **Multi-timeframe** (Monthly/Weekly/Daily/4H/1H/30M/15M/5M/1M → HTF bias + LTF execution + alignment score), **full market context** (fear&greed, BTC dominance, S&P/Nasdaq/DXY, macro calendar FOMC/CPI/NFP, halving cycle, geopolitics, influencer/social pulse), **trading-style signals** (Scalp/Day/Swing/Momentum/Position — "what the market provides, we take"), and **state memory** so signals only change when the market state changes — no random 30s signals. |
 
@@ -59,13 +59,15 @@ with connectors for your **private CryptoDada website** and **Discord group**.
                     └───────────────┬──────────────────────────────┘
                                     ▼
                     ┌──────────────────────────────────────────────┐
-                    │            ENGINE (this repo)                │
-                    │  indicators.py   → RSI MACD EMA VWAP ADX …   │
-                    │  structure.py    → BOS/CHOCH OB FVG liquidity│
-                    │  features.py     → labeled market snapshot   │
-                    │  scorer.py       → weighted condition score  │
-                    │  rules.py        → IF/THEN conditional plans │
-                    │  signal_engine.py→ final JSON + best signal  │
+                    │       IMPERATIVE SHELL (full_pipeline.py)     │
+                    │ fetch MTF/context/calibration · memory · DB   │
+                    └───────────────┬──────────────────────────────┘
+                                    ▼
+                    ┌──────────────────────────────────────────────┐
+                    │       FUNCTIONAL CORE (engine/pipeline.py)   │
+                    │ indicators → structure → immutable features │
+                    │ → weighted scores → all conditional plans   │
+                    │ → setup authorization policy                │
                     └───────────────┬──────────────────────────────┘
                                     ▼
               ┌─────────────────────┼─────────────────────┐
@@ -77,11 +79,15 @@ with connectors for your **private CryptoDada website** and **Discord group**.
 ```
 
 ```
-Binance klines → add_all_indicators() → analyze_structure()
-     → build_snapshot() → score_bullish() / score_bearish()
-     → build_plans()    → build_best_signal()
-     → build_intelligence() strict desk filter
-     → JSON {signal, plans, intelligence, snapshot, market_context, validation}
+market + config → immutable FeatureStage → ScoreStage → PlanStage
+     → decision_service.watch_items (conditional / research scenarios)
+     → decision_service.active_candidate (authorized + executable now, if any)
+     → playbook + portfolio + risk gates
+     → decision_service.desk_verdict (TRADE / NO_TRADE)
+
+`confidence` is analytical confluence per plan. `execution_probability` is a
+separate measured trigger/fill rate. The legacy `signal` object remains only as
+a backwards-compatible adapter and is never built from a waiting plan.
 ```
 
 ---
@@ -95,7 +101,7 @@ configurable via `.env`; defaults are conservative.
 | Decision | What it does | Control |
 |---|---|---|
 | **Desk-first** | Every scan ends in ONE `decision`: `TRADE BUY/SELL` or `WAIT — NO TRADE`. Desk-vetoed signals never enter the approval queue. Raw engine plans stay visible as research. | `DESK_DEFAULT=true` |
-| **One primary setup family** | Only your chosen family (default: liquidity sweep + trend continuation = Sweep Reversal + OB/FVG Pullback) may become the best signal; everything else is a watch-item until proven. | `PRIMARY_SETUP_FAMILY=sweep_trend_continuation` |
+| **One primary setup family** | The engine researches every setup, then a decision-boundary policy authorizes only your chosen family (default: Sweep Reversal + OB/FVG Pullback). Everything else remains a visible, learnable watch-item. | `PRIMARY_SETUP_FAMILY=sweep_trend_continuation` |
 | **Data-driven R:R** | TP targets come from measured per-setup expectancy (clamped 1.5–4.0R); the old fixed 2.0 gate is now a safety floor. | `TP_RR_MIN/MAX`, `INTELLIGENCE_MIN_RR=1.5` |
 | **Per-asset playbooks** | BTC 4H→1H→15M · ETH gated by BTC bias + ETH/BTC slope · GOLD D1→4H→1H/15M + PDH/PDL + London/NY sessions + US-data no-entry windows. | `brain/playbooks.py` |
 | **Correlation risk** | BTC+ETH = ONE crypto bucket: same-direction duplicates, full buckets and combined risk veto new trades; gold is tracked separately. | `CRYPTO_BUCKET_MAX_TRADES=2` |
@@ -122,6 +128,7 @@ python main.py agent ask "is the risk gate open?"   # natural-language question
 python main.py agent ask "am i ready for micro?"    # the graduation gate
 python main.py agent all      # one desk run: health + briefing + graduation
 python main.py simulator      # grind unique 100-backtest / 20-paper samples per setup
+python main.py meta-learn --symbol BTC --bars 500  # advisory weight search; never auto-applies
 python main.py mcp            # MCP server for Claude Desktop / Cursor (stdio)
 ```
 
@@ -188,6 +195,40 @@ risk gate, ask, pending, stats, paper, learn).  Add to your MCP client config:
     "command": "python", "args": ["main.py", "mcp"], "cwd": "/path/to/AI" } } }
 ```
 
+There is also a **zero-dependency** MCP server at the repo root
+(`python mcp_server.py`) for environments where the `mcp` SDK cannot be
+installed.  It speaks newline-delimited JSON-RPC 2.0 and exposes read-only
+desk tools (`ask`, `risk`, `health`, `brief`, `tradestate`, `postreview`)
+behind an explicit permission map — no order placement, no gate bypass.
+
+#### AI anatomy suite (RAG · briefs · agents · immune system)
+
+* `brain/library.py` + `brain/ask.py` — grounded Q&A over the knowledge base
+  (backtest performance, per-asset playbooks, risk rules, SMC glossary) with
+  strict citations.
+* `brain/brief.py` — cross-asset morning brief (BTC/ETH/GOLD posture + session
+  windows) and post-trade reviews (`headline: TP_HIT · 1.5R · MAE … · MFE … ·
+  Followed rules: YES`).
+* `brain/agents.py` — autonomous desk agents (`morning_brief`, `watchdog`,
+  `paper_reviewer`, `weekly_review`), each run logged to the `agent_runs`
+  audit table.
+* `brain/immune.py` — diagnostic alarms: stale data detection, DB integrity,
+  risk-gate violations, behavioral flags, calibration health.
+
+#### Hidden alpha & risk variance (`hidden`, `correlation`)
+
+* `python main.py hidden chart_read [SYMBOL]` — Markov-smoothed latent regime
+  probabilities (bull / bear / mean-reverting / expansion), CVD order-flow
+  absorption/exhaustion, Bayesian fractional Kelly size (advisory only),
+  8D state fingerprint + "have we been here before?" similarity search.
+* `python main.py hidden analytics mae` — MAE/MFE summary per setup (are your
+  stops too tight? are your targets unreachable?) from the real paper book.
+* `python main.py hidden analytics mc` — Monte-Carlo resampling of realized
+  paper outcomes → distribution of terminal equity and max drawdown.
+* `python main.py correlation` — **measured** rolling correlation matrix
+  (BTC/ETH/GOLD) + ETH/BTC beta, with an explicit check of the static
+  "BTC+ETH are one bucket" portfolio rule.  Read-only analytics.
+
 ---
 
 ## 🚀 Quickstart
@@ -233,9 +274,12 @@ python main.py reject 42 --note "chasing entry"
 python main.py signal 42             # full detail + lifecycle trail
 
 # 10. PAPER TRADING — safely monitor approved signals; NO real orders are sent
+python main.py preflight             # strict live/fresh-feed + safety-config gate
 python main.py paper                 # one safe live-market check now
-python main.py paper --watch         # keep checking every 30s (Ctrl+C to stop)
+python main.py paper --watch         # preflight runs automatically, then checks every 30s
 python main.py paper --watch --interval 60 --symbol XAUUSD
+# For an OFFLINE REHEARSAL only: DEMO_MODE=1 python main.py paper --watch --allow-demo
+# Demo outcomes never count as live paper evidence.
 # Immediate plans paper-fill at their stated entry after approval.
 # Conditional plans wait until a live candle reaches the planned entry.
 # SL / TP1 closes are recorded automatically in SQLite and feed `learn`.
@@ -260,6 +304,21 @@ python main.py glossary FVG          # quick term lookup
 # 15. run tests
 python -m pytest tests/ -q
 ```
+
+### 24/7 paper operations
+
+For an Ubuntu/Debian VPS, use the hardened units in `ops/systemd/` and follow
+[`docs/PAPER_TRADING_OPERATIONS.md`](docs/PAPER_TRADING_OPERATIONS.md). The
+production layout provides:
+
+- a strict fail-closed preflight before unattended paper monitoring;
+- a 15-minute watchlist scan timer that **never auto-approves** candidates;
+- a continuously supervised paper monitor with restart limits;
+- a Gunicorn dashboard bound only to `127.0.0.1`; and
+- persistent SQLite storage outside the Git checkout with backup guidance.
+
+The dashboard includes approval/write actions. Keep port 8050 private and use
+an SSH tunnel or authenticated TLS reverse proxy for remote access.
 
 ### Supported markets / aliases
 
@@ -286,7 +345,7 @@ stricter than the raw signal engine and will return `"signal":"NO TRADE"` when
 capital-preservation filters fail:
 
 * confidence below `INTELLIGENCE_MIN_CONFIDENCE` (default 80%)
-* RR below `INTELLIGENCE_MIN_RR` (default 1:2)
+* RR below `INTELLIGENCE_MIN_RR` (default 1:1.5 safety floor)
 * high-impact macro/news risk, sideways/volatile market, or HTF contradiction
 * insufficient market data
 
@@ -417,17 +476,24 @@ the output is never empty.
 ## 🧪 Tests
 
 ```bash
-python -m pytest tests/ -q      # 90 tests, fully offline (synthetic data)
+python -m pytest tests/ -q      # 250+ tests, fully offline (synthetic data)
 ```
 
 Covers: indicator math & no-look-ahead, structure detection (BOS/CHOCH, FVG,
 sweeps), score bounds, plan generation (SL below entry for BUY etc.), full
-pipeline, JSON schema validation, the backtester grader, the database, the
-signal lifecycle (approval gate transitions), the conservative paper-trading
-runner (entry / SL / TP detection), the calibrator, and the coach.
+pipeline, JSON schema validation, the regime-tagged backtester grader, the
+execution/slippage model, the database + simulator sample dedupe, the signal
+lifecycle (approval gate transitions), the conservative paper-trading runner
+with MAE/MFE, the calibrator, the desk decision + playbooks + portfolio veto,
+the enforced risk gate (daily/weekly/drawdown/trader-state/progression), the
+journal + business metrics, hidden-alpha analytics, cross-asset correlation,
+the desk agent layer (health/brief/ask/graduation), the autonomous agents, the
+immune diagnostics, the RAG library Q&A, both MCP servers (SDK + zero-dep
+stdio), and the dashboard JS.
 
-On every push, GitHub Actions runs this suite automatically
-(`.github/workflows/ci.yml`) plus an offline smoke test on the sample data.
+On every push, GitHub Actions runs this suite automatically plus an offline
+smoke test on the sample data. The workflow ships as `docs/CI-workflow.yml` —
+rename it to `.github/workflows/ci.yml` to activate (see the note there).
 
 ---
 
@@ -522,8 +588,11 @@ visibly separate in the dashboard.
 
 ## 🔄 CI
 
-`.github/workflows/ci.yml` runs on every push / PR to `main`:
-Python 3.12 → install deps → `compileall` → `pytest` → offline smoke test on
+The workflow ships as **`docs/CI-workflow.yml`** — rename it to
+`.github/workflows/ci.yml` (GitHub web UI: upload the file into `.github/workflows/`)
+to activate it, since automation tokens may not create workflow files.  Once
+active it runs on every push / PR to `main`: Python 3.12 → install deps →
+`compileall` → `pytest` → offline smoke test on
 `data_samples/btcusdt_15m_sample.csv`. All tests are network-free, so CI is
 fast and deterministic.
 
@@ -616,78 +685,101 @@ from ever hanging at "Loading…".
 
 ```
 crypto-brain/
-├── main.py                  # CLI: scan / watch / paper / sources / backtest / stats / web
-├── config.py                # env-driven configuration
+├── main.py                  # CLI: scan / watch / paper / risk / journal / simulator /
+│                            #      agent / brief / health / hidden / correlation / mcp …
+├── mcp_server.py            # zero-dependency stdio MCP server (JSON-RPC fallback)
+├── config.py                # env-driven configuration (progression ladder, gates)
 ├── engine/
 │   ├── indicators.py        # RSI MACD EMA VWAP ADX BB Supertrend WaveTrend …
 │   ├── structure.py         # swings, BOS/CHOCH, OB, FVG, liquidity, sweeps
 │   ├── features.py          # labeled market snapshot (60 conditions)
 │   ├── scorer.py            # weighted condition scoring → confidence
-│   ├── rules.py             # IF/THEN conditional plan generator
+│   ├── rules.py             # IF/THEN conditional plan generator (primary-family aware)
 │   ├── lifecycle.py         # signal state machine + human approval gate
+│   ├── regime.py            # market regime + liquidity-trap / fakeout detection
+│   ├── hidden_alpha.py      # HMM regimes, CVD order flow, Bayesian Kelly, 8D fingerprint
+│   ├── correlation.py       # measured cross-asset correlation matrix + ETH/BTC beta
+│   ├── execution.py         # realistic spread/slippage execution model (EXECUTION_MODEL)
+│   ├── mtf.py               # multi-timeframe analysis (HTF bias → LTF execution)
 │   ├── calibration_hook.py  # applies the self-improvement profile to plans
 │   └── signal_engine.py     # orchestrator → final JSON
 ├── brain/
+│   ├── decision.py          # desk-first FINAL decision (desk + playbook + portfolio + risk)
+│   ├── playbooks.py         # per-asset playbooks (BTC/ETH/GOLD + sessions + PDH/PDL)
+│   ├── portfolio.py         # correlation buckets: BTC+ETH = ONE crypto bucket
+│   ├── risk_gate.py         # enforced daily/weekly/drawdown/trader-state gate (+ Kelly advisory)
+│   ├── calibrator.py        # self-improvement: expectancy → calibration profile (regime-keyed)
+│   ├── journal.py           # "did I follow my system?" + execution quality verdicts
+│   ├── metrics.py           # business scorecard: PF, max DD, streaks, rolling windows
+│   ├── analytics.py         # MAE/MFE summary + Monte-Carlo equity resampling
+│   ├── trading_intelligence.py  # strict desk report + institutional signal card
+│   ├── institutional_score.py   # IPS score, trade grades, TP ladders, Kelly
+│   ├── agent.py             # desk agent: morning briefing / health / ask / graduation
+│   ├── agents.py            # autonomous agents: watchdog / reviewer / weekly (audit-logged)
+│   ├── brief.py             # cross-asset morning brief + post-trade reviews
+│   ├── immune.py            # system diagnostics: staleness, DB, gate, calibration alarms
+│   ├── library.py           # RAG knowledge index (setups, playbooks, risk rules, glossary)
+│   ├── ask.py               # grounded Q&A with citations
 │   ├── coach.py             # teaching layer: explain / mentor / feedback / glossary
-│   ├── calibrator.py        # self-improvement: expectancy → calibration profile
 │   ├── context.py           # fear&greed, dominance, equities, macro, cycle, social, geopolitics
-│   ├── styles.py            # trading-style classification (Scalp/Day/Swing/Momentum/Position)
-│   ├── state_memory.py      # market-state memory + signal stability (anti-spam, whipsaw guard)
-│   └── full_pipeline.py     # combines MTF + context + engine + styles + memory
-├── engine/
-│   ├── indicators.py        # RSI MACD EMA VWAP ADX BB Supertrend WaveTrend …
-│   ├── structure.py         # swings, BOS/CHOCH, OB, FVG, liquidity, sweeps
-│   ├── mtf.py               # multi-timeframe analysis (HTF bias → LTF execution)
-│   ├── features.py          # labeled market snapshot (60 conditions)
-│   ├── scorer.py            # weighted condition scoring → confidence
-│   ├── rules.py             # IF/THEN conditional plan generator
-│   ├── lifecycle.py         # signal state machine + human approval gate
-│   ├── calibration_hook.py  # applies the self-improvement profile to plans
-│   └── signal_engine.py     # orchestrator → final JSON
+│   ├── styles.py            # trading-style classification (Scalp/Day/Swing/…)
+│   ├── state_memory.py      # market-state memory + signal stability (anti-spam)
+│   └── full_pipeline.py     # combines MTF + context + engine + styles + memory + decision
 ├── data/
 │   ├── binance_client.py    # geo-aware Binance market data
-│   ├── database.py          # SQLite store (scans/plans/decisions/backtests/paper trades)
-│   ├── backtester.py        # walk-forward plan grader (+1h/+4h/+24h)
-│   ├── paper_trading.py     # approved-signal live-market paper runner (SL / TP1)
+│   ├── sample_client.py     # DEMO_MODE offline client (sample + deterministic synthetic)
+│   ├── database.py          # SQLite store (scans/plans/decisions/backtests/paper/journal/agent_runs)
+│   ├── backtester.py        # walk-forward plan grader (+1h/+4h/+24h, regime-tagged, slip-aware)
+│   ├── paper_trading.py     # approved-signal live-market paper runner (SL / TP, MAE/MFE)
+│   ├── simulator.py         # unique-sample grind (100 backtest / 20 paper proof)
 │   └── sources/
 │       ├── cryptodada_website.py  # private-site connector (api/browser)
 │       ├── discord_reader.py      # Discord reader + webhook push
 │       └── news.py                # RSS headlines + sentiment
-├── ai/llm_brain.py          # optional LLM narrative (OpenAI/Gemini/offline)
+├── ai/
+│   ├── llm_brain.py         # optional LLM narrative + completion (OpenAI/Groq/Gemini/offline)
+│   └── mcp_server.py        # SDK-based MCP server (`python main.py mcp`)
 ├── output/
 │   ├── signal_schema.py     # JSON validation
+│   ├── signal_card.py       # institutional signal card (terminal rendering)
 │   └── notifiers.py         # Telegram + Discord push
-├── web/app.py               # Flask dashboard (+ approval queue + coach)
-├── tests/                   # offline test-suite (52 tests)
-├── .github/workflows/ci.yml # auto test-runner on push
+├── web/app.py               # Flask dashboard (decision, risk gate, agents, ask, paper, learning)
+├── tests/                   # offline test-suite (258+ tests, 100% offline-capable)
+├── docs/CI-workflow.yml     # GitHub Actions CI (rename to .github/workflows/ci.yml)
 ├── examples/example_signal.json
 └── data_samples/btcusdt_15m_sample.csv
 ```
 
 ---
 
-## 👤 Ownership
+## 👤 Provenance & publishing
+
+This repository is the **consolidated production build**, merged from two
+sibling projects by the same author:
+
+| Source | Contributed |
+|---|---|
+| [Cloudslover/AI](https://github.com/Cloudslover/AI) | Base engine + professional mode: hidden-alpha quant layer, execution/slippage model, analytics (MAE/MFE, Monte Carlo), risk gate with Kelly advisory, dashboard panels |
+| [cloudshome/AI](https://github.com/cloudshome/AI) | AI anatomy suite: RAG library + grounded Q&A, morning brief + post-trade reviews, autonomous agents + audit log, immune diagnostics, zero-dependency MCP server |
+
+Everything overlaps cleanly: shared modules were diffed line-by-line and the
+stronger variant of each is kept (see `MERGE_NOTES.md`).  The union is covered
+by the full offline test suite (250+ tests, 100% pass).
 
 | | |
 |---|---|
-| **Owner** | [Cloudslover](https://github.com/Cloudslover) |
-| **Canonical repo** | https://github.com/Cloudslover/AI |
+| **Owner** | [Azimshawon](https://github.com/Azimshawon) |
+| **Canonical repo** | https://github.com/Azimshawon/SKY (this repository) |
+| **Upstream references** | https://github.com/Cloudslover/AI · https://github.com/cloudshome/AI |
 | **Companion dashboard** | https://github.com/Cloudslover/CryptoDashboard |
-| **Upstream reference** | https://github.com/cloudshome/AI (read-only history source) |
-
-## 📤 Publishing to GitHub
 
 ```bash
-# Create an empty public repo named "AI" under Cloudslover, then:
-cd AI
-git remote add origin https://github.com/Cloudslover/AI.git   # already set in this workspace
+git remote add origin https://github.com/Azimshawon/SKY.git
 git push -u origin main
+# optional upstreams for reference pulls:
+git remote add cloudslover https://github.com/Cloudslover/AI.git
+git remote add cloudshome  https://github.com/cloudshome/AI.git
 ```
-
-This workspace is pre-wired:
-
-* `origin`   → `https://github.com/Cloudslover/AI.git` (push target)
-* `upstream` → `https://github.com/cloudshome/AI.git` (pull latest reference code)
 
 ---
 

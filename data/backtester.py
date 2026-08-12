@@ -100,7 +100,8 @@ def _evaluate(plan: dict, df: pd.DataFrame, i: int, horizon_bars: int,
 
     # Did price ever trade at the entry level? Only conditional (waiting) plans
     # need the trigger — immediate plans execute at the current bar.
-    conditional = plan.get("status") == "waiting" or plan.get("trigger_level") is not None
+    conditional = (plan.get("execution_mode") == "conditional" if "execution_mode" in plan
+                   else plan.get("status") == "waiting" or plan.get("trigger_level") is not None)
     touched_entry = True
     if conditional:
         touched_entry = ((lows <= entry) & (highs >= entry)).any()
@@ -196,7 +197,8 @@ def run_backtest(df: pd.DataFrame, symbol: str = "BTCUSDT", timeframe: str = "15
                  horizons: Optional[list[float]] = None,
                  min_bars: int = BACKTEST_MIN_BARS,
                  step: int = BACKTEST_STEP,
-                 min_confidence: int = 55) -> dict:
+                 min_confidence: int = 55,
+                 scoring_weights: dict | None = None) -> dict:
     """Walk the engine over history and grade every plan at every horizon."""
     symbol = normalize_symbol(symbol)
     horizons = horizons or BACKTEST_HORIZONS
@@ -213,7 +215,8 @@ def run_backtest(df: pd.DataFrame, symbol: str = "BTCUSDT", timeframe: str = "15
     for i in range(min_bars, len(df), step):
         slice_df = df.iloc[: i + 1]
         out = analyze_frame(slice_df, symbol=symbol, timeframe=timeframe,
-                            min_confidence=min_confidence)
+                            min_confidence=min_confidence,
+                            scoring_weights=scoring_weights)
         plans = out.plans
         if not plans:
             continue
@@ -234,6 +237,7 @@ def run_backtest(df: pd.DataFrame, symbol: str = "BTCUSDT", timeframe: str = "15
             "min_bars": min_bars, "step": step,
             "runtime_seconds": round(time.time() - start, 2),
             "engine_min_confidence": min_confidence,
+            "scoring_weights": scoring_weights,
         },
         "summary": _aggregate([g for g in all_graded if g.horizon_hours == horizons[0]]),
         "per_horizon": {

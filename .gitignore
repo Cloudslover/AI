@@ -10,6 +10,7 @@ venv/
 # data caches (keep the committed sample)
 data_samples/*.csv
 !data_samples/btcusdt_15m_sample.csv
+!data_samples/acceptance/*.csv
 data_samples/backtest_report.json
 
 # sqlite learning store

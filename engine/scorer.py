@@ -21,6 +21,45 @@ exactly which conditions fired.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Mapping
+
+
+DEFAULT_SCORING_WEIGHTS: dict[str, int] = {
+    "Trend": 15,
+    "Market structure": 15,
+    "OB/FVG": 20,
+    "Liquidity": 15,
+    "Volume": 10,
+    "RSI divergence": 10,
+    "Momentum": 10,
+    "Location": 5,
+}
+
+
+def normalize_weights(weights: Mapping[str, int | float] | None = None) -> dict[str, int]:
+    """Validate a complete 100-point profile.
+
+    Weight profiles are explicit and advisory: an incomplete or malformed
+    profile fails fast instead of silently changing the desk's reasoning.
+    """
+    if weights is None:
+        return dict(DEFAULT_SCORING_WEIGHTS)
+    unknown = set(weights) - set(DEFAULT_SCORING_WEIGHTS)
+    missing = set(DEFAULT_SCORING_WEIGHTS) - set(weights)
+    if unknown or missing:
+        raise ValueError(f"scoring profile mismatch; missing={sorted(missing)}, unknown={sorted(unknown)}")
+    out = {name: int(round(float(weights[name]))) for name in DEFAULT_SCORING_WEIGHTS}
+    if any(v < 0 for v in out.values()) or sum(out.values()) != 100:
+        raise ValueError("scoring weights must be non-negative integers totaling 100")
+    return out
+
+
+def _weighted_conditions(raw: Mapping[str, int], weights: Mapping[str, int | float] | None) -> dict[str, int]:
+    profile = normalize_weights(weights)
+    return {
+        name: int(round(max(0, raw.get(name, 0)) / DEFAULT_SCORING_WEIGHTS[name] * profile[name]))
+        for name in DEFAULT_SCORING_WEIGHTS
+    }
 
 
 @dataclass
@@ -53,8 +92,9 @@ def _mapped_confidence(score: int) -> tuple[str, int]:
     return "NO TRADE", score
 
 
-def score_bullish(f: dict) -> ScoreBreakdown:
-    s = ScoreBreakdown()
+def score_bullish(f: dict, weights: Mapping[str, int | float] | None = None) -> ScoreBreakdown:
+    profile = normalize_weights(weights)
+    s = ScoreBreakdown(max_score=sum(profile.values()))
     cond: dict[str, int] = {}
     fired: list[str] = []
 
@@ -145,6 +185,7 @@ def score_bullish(f: dict) -> ScoreBreakdown:
         loc += 2
     cond["Location"] = loc
 
+    cond = _weighted_conditions(cond, profile)
     s.score = sum(cond.values())
     s.conditions = cond
     s.fired = fired
@@ -152,8 +193,9 @@ def score_bullish(f: dict) -> ScoreBreakdown:
     return s
 
 
-def score_bearish(f: dict) -> ScoreBreakdown:
-    s = ScoreBreakdown()
+def score_bearish(f: dict, weights: Mapping[str, int | float] | None = None) -> ScoreBreakdown:
+    profile = normalize_weights(weights)
+    s = ScoreBreakdown(max_score=sum(profile.values()))
     cond: dict[str, int] = {}
     fired: list[str] = []
 
@@ -236,6 +278,7 @@ def score_bearish(f: dict) -> ScoreBreakdown:
         loc += 2
     cond["Location"] = loc
 
+    cond = _weighted_conditions(cond, profile)
     s.score = sum(cond.values())
     s.conditions = cond
     s.fired = fired
@@ -243,11 +286,12 @@ def score_bearish(f: dict) -> ScoreBreakdown:
     return s
 
 
-def score_neutral(f: dict) -> ScoreBreakdown:
+def score_neutral(f: dict, weights: Mapping[str, int | float] | None = None) -> ScoreBreakdown:
     """Both-side scores below threshold → NO TRADE."""
-    bull = score_bullish(f)
-    bear = score_bearish(f)
-    s = ScoreBreakdown()
+    profile = normalize_weights(weights)
+    bull = score_bullish(f, profile)
+    bear = score_bearish(f, profile)
+    s = ScoreBreakdown(max_score=sum(profile.values()))
     s.confidence = "NO TRADE"
     s.confidence_pct = max(bull.confidence_pct, bear.confidence_pct)
     s.conditions = {"bull_score": bull.score, "bear_score": bear.score}

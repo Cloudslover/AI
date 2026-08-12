@@ -1,0 +1,51 @@
+{
+  "BTCUSDT": {
+    "signal_action": "NO TRADE",
+    "signal_confidence": "LOW",
+    "plan_count": 3,
+    "plan_types": [
+      "Sweep Reversal Sell",
+      "Breakout Buy",
+      "Sell Pullback"
+    ],
+    "authorized_count": 2,
+    "watch_count": 3,
+    "active_candidate_type": null,
+    "desk_status": "NO_TRADE",
+    "desk_action": "NO TRADE",
+    "htf_structure_count": 8,
+    "validation_ok": true
+  },
+  "ETHUSDT": {
+    "signal_action": "NO TRADE",
+    "signal_confidence": "LOW",
+    "plan_count": 3,
+    "plan_types": [
+      "Sweep Reversal Buy",
+      "Sell Pullback",
+      "FVG Retest Sell"
+    ],
+    "authorized_count": 2,
+    "watch_count": 3,
+    "active_candidate_type": null,
+    "desk_status": "NO_TRADE",
+    "desk_action": "NO TRADE",
+    "htf_structure_count": 16,
+    "validation_ok": true
+  },
+  "XAUUSD": {
+    "signal_action": "NO TRADE",
+    "signal_confidence": "LOW",
+    "plan_count": 1,
+    "plan_types": [
+      "Breakout Buy"
+    ],
+    "authorized_count": 0,
+    "watch_count": 1,
+    "active_candidate_type": null,
+    "desk_status": "NO_TRADE",
+    "desk_action": "NO TRADE",
+    "htf_structure_count": 12,
+    "validation_ok": true
+  }
+}

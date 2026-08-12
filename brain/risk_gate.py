@@ -224,9 +224,21 @@ def evaluate(db: SignalDB, symbol: str | None = None, plan_type: str | None = No
     allowed = not blocked_by
     return {
         "allowed": allowed,
+        # "open"/"progression" are first-class aliases: the desk agents,
+        # immune diagnostics and the root MCP server read the gate through
+        # these keys, while the CLI/dashboard use "allowed"/"details".
+        "open": allowed,
         "blocked_by": blocked_by,
         "details": details,
+        "progression": prog,
     }
+
+
+def evaluate_risk_gate(db: SignalDB, symbol: str | None = None,
+                       plan_type: str | None = None,
+                       action: str | None = None) -> dict:
+    """Convenience alias for evaluate (used by agents / immune / MCP)."""
+    return evaluate(db, symbol=symbol, plan_type=plan_type, action=action)
 
 
 def gate_message(gate: dict) -> str:

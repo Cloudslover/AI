@@ -26,8 +26,10 @@ from . import risk_gate as risk_gate_mod
 
 
 def _top_plan_type(payload: dict) -> str:
+    candidate = (payload.get("decision_service") or {}).get("active_candidate")
+    if candidate:
+        return candidate.get("type") or ""
     plans = payload.get("plans") or []
-    intel = payload.get("intelligence") or {}
     for p in plans:
         if p.get("primary", True):
             return p.get("type") or ""

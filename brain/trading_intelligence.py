@@ -400,8 +400,17 @@ def build_intelligence(payload: dict, df: Optional[pd.DataFrame] = None,
     plans = payload.get("plans") or []
     asset = sig.get("asset") or features.get("symbol") or "UNKNOWN"
 
-    initial_action = sig.get("action") if sig.get("action") in ("BUY", "SELL") else None
-    plan = _pick_plan(plans, initial_action) or _pick_plan(plans)
+    # Execution semantics come from the decision service. A conditional
+    # pullback can be analytically excellent but is not an executable plan yet.
+    has_decision_service = "decision_service" in payload
+    candidate = (payload.get("decision_service") or {}).get("active_candidate")
+    initial_action = ((candidate or {}).get("action") or
+                      (sig.get("action") if sig.get("action") in ("BUY", "SELL") else None))
+    # Compatibility for callers constructing the pre-v2.1 payload directly.
+    # New engine payloads always include decision_service and therefore never
+    # promote a conditional watch item into an immediate desk trade.
+    plan = (candidate if has_decision_service else
+            (_pick_plan(plans, initial_action) or _pick_plan(plans)))
     action = (plan or {}).get("action") or initial_action or "NO TRADE"
     confidence = int((plan or {}).get("confidence") or
                      max((payload.get("snapshot", {}).get("scores", {}).get("bull", {}) or {}).get("confidence_pct", 0),

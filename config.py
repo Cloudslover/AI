@@ -1,6 +1,7 @@
 """CryptoBrain configuration — copy .env.example to .env to override."""
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from dotenv import load_dotenv
@@ -9,7 +10,7 @@ from data.symbols import DEFAULT_WATCHLIST, normalize_symbol, parse_symbol_list
 
 load_dotenv()
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 
 ROOT = Path(__file__).parent
 
@@ -83,6 +84,17 @@ PRIMARY_FAMILIES = {
 TP_RR_MIN = float(os.getenv("TP_RR_MIN", "1.5"))
 TP_RR_MAX = float(os.getenv("TP_RR_MAX", "4.0"))
 
+# Scoring profiles are switched only by an explicit operator edit. The weekly
+# meta-learner prints a suggested JSON value but never writes this setting.
+SCORING_WEIGHTS_JSON = os.getenv("SCORING_WEIGHTS_JSON", "").strip()
+SCORING_WEIGHTS = None
+if SCORING_WEIGHTS_JSON:
+    try:
+        from engine.scorer import normalize_weights
+        SCORING_WEIGHTS = normalize_weights(json.loads(SCORING_WEIGHTS_JSON))
+    except (ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Invalid SCORING_WEIGHTS_JSON: {exc}") from exc
+
 # ── CryptoDada connector ─────────────────────────────────────────────────
 CRYPTODADA_MODE = os.getenv("CRYPTODADA_MODE", "auto")          # auto|api|browser
 CRYPTODADA_BASE_URL = os.getenv("CRYPTODADA_BASE_URL", "").rstrip("/")
@@ -109,7 +121,9 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # ── Web dashboard ────────────────────────────────────────────────────────
-DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "0.0.0.0")
+# Loopback by default: the dashboard includes approval/write actions and must
+# not be exposed directly without an authenticated reverse proxy.
+DASHBOARD_HOST = os.getenv("DASHBOARD_HOST", "127.0.0.1")
 DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "8050"))
 
 # ── Signal database (learning store) ─────────────────────────────────────
@@ -125,6 +139,7 @@ PAPER_MAX_CANDLES_PER_CHECK = int(os.getenv("PAPER_MAX_CANDLES_PER_CHECK", "1000
 BACKTEST_HORIZONS = [float(h) for h in os.getenv("BACKTEST_HORIZONS", "1,4,24").split(",")]
 BACKTEST_MIN_BARS = int(os.getenv("BACKTEST_MIN_BARS", "120"))
 BACKTEST_STEP = int(os.getenv("BACKTEST_STEP", "1"))
+FILL_PROBABILITY_HORIZON_HOURS = float(os.getenv("FILL_PROBABILITY_HORIZON_HOURS", "4"))
 EXECUTION_MODEL = os.getenv("EXECUTION_MODEL", "none")  # none | slip | impact
 
 # ── Calibration (self-improvement) ───────────────────────────────────────
@@ -163,7 +178,8 @@ GOLD_OWN_BUCKET = True  # gold exposure is tracked separately from crypto
 # ── Gold playbook (decision B8) ──────────────────────────────────────────
 # Sessions in UTC hours; PDH/PDL come from daily bars; US-data countdown is
 # the existing macro calendar's high-impact window.  Mode: warn | block | off.
-GOLD_SESSION_MODE = os.getenv("GOLD_SESSION_MODE", "warn").strip().lower()
+# Fail closed by default for unattended operation; local research may override.
+GOLD_SESSION_MODE = os.getenv("GOLD_SESSION_MODE", "block").strip().lower()
 GOLD_LONDON_WINDOW = (7, 16)      # UTC hours, inclusive start / exclusive end
 GOLD_NY_WINDOW = (12, 21)         # UTC hours
 GOLD_PDH_PDL = True
